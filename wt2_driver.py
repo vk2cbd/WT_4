@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""
+WT_2 hardware driver and safety model.
+
+This file contains the decoded WinTrak Arduino protocol plus calibration and
+software-limit helpers used by the GUI.
+"""
+
+from __future__ import annotations
+
+import math
+import threading
+import time
+from dataclasses import dataclass
+from enum import Enum
+from typing import Callable, Optional
+
+try:
+    import serial
+except ImportError:
+    serial = None
+
+
+class WinTrakProtocolError(RuntimeError):
+    """Raised when the controller replies with an unexpected value."""
+
+
+class SafetyError(RuntimeError):
+    """Raised when a requested move would violate software safety limits."""
+
+
+class Axis(str, Enum):
+    AZIMUTH = "azimuth"
+    ELEVATION = "elevation"
+
+
+class Direction(str, Enum):
+    AZ_CW = "az-cw"
+    AZ_CCW = "az-ccw"
+    EL_UP = "el-up"
+    EL_DOWN = "el-down"
+
+
+@dataclass(frozen=True)
+class AxisMap:
+    prefix: int
+    positive_channel: int
+    negative_channel: int
+
+
+@dataclass
+class Calibration:
+    az_offset: float = 0.0
+    el_offset: float = 0.0
+
+    def apply_az(self, raw_azimuth: float) -> float:
+        return normalize_degrees(raw_azimuth + self.az_offset)
+
+    def apply_el(self, raw_elevation: float) -> float:
+        return raw_elevation + self.el_offset
+
+
+@dataclass
+class SafetyLimits:
+    az_min: float = 270.0
+    az_max: float = 265.0
+    el_min: float = 0.0
+    el_max: float = 87.0
+    az_margin: float = 0.5
+    el_margin: float = 0.5
+    max_jog_seconds: float = 5.0
+    poll_interval: float = 0.2
+
+    def is_az_allowed(self, azimuth: float) -> bool:
+        azimuth = normalize_degrees(azimuth)
+        if self.az_min <= self.az_max:
+            return self.az_min <= azimuth <= self.az_max
+        return azimuth >= self.az_min or azimuth <= self.az_max
+
+    def is_el_allowed(self, elevation: float) -> bool:
+        return self.el_min <= elevation <= self.el_max
+
+    def assert_position_allowed(self, azimuth: float, elevation: float) -> None:
+        if not self.is_az_allowed(azimuth):
+            raise SafetyError(f"Azimuth {azimuth:0.2f} outside limits {self.az_min:0.2f}..{self.az_max:0.2f}")
+        if not self.is_el_allowed(elevation):
+            raise SafetyError(f"Elevation {elevation:0.2f} outside limits {self.el_min:0.2f}..{self.el_max:0.2f}")
+
+    def assert_move_allowed(self, direction: Direction, azimuth: float, elevation: float) -> None:
+        self.assert_position_allowed(azimuth, elevation)
+
+        if direction == Direction.EL_UP and elevation >= self.el_max - self.el_margin:
+            raise SafetyError(f"Elevation {elevation:0.2f} too close to upper limit {self.el_max:0.2f}")
+        if direction == Direction.EL_DOWN and elevation <= self.el_min + self.el_margin:
+            raise SafetyError(f"Elevation {elevation:0.2f} too close to lower limit {self.el_min:0.2f}")
+
+        azimuth = normalize_degrees(azimuth)
+        if self.az_min <= self.az_max:
+            if direction == Direction.AZ_CW and azimuth >= self.az_max - self.az_margin:
+                raise SafetyError(f"Azimuth {azimuth:0.2f} too close to CW limit {self.az_max:0.2f}")
+            if direction == Direction.AZ_CCW and azimuth <= self.az_min + self.az_margin:
+                raise SafetyError(f"Azimuth {azimuth:0.2f} too close to CCW limit {self.az_min:0.2f}")
+        else:
+            if direction == Direction.AZ_CW and azimuth <= self.az_max and azimuth >= self.az_max - self.az_margin:
+                raise SafetyError(f"Azimuth {azimuth:0.2f} too close to CW wrap limit {self.az_max:0.2f}")
+            if direction == Direction.AZ_CCW and azimuth >= self.az_min and azimuth <= self.az_min + self.az_margin:
+                raise SafetyError(f"Azimuth {azimuth:0.2f} too close to CCW wrap limit {self.az_min:0.2f}")
+
+
+@dataclass
+class AntennaConfig:
+    name: str
+    port: str
+    baud: int = 9600
+    open_delay: float = 5.0
+    calibration: Calibration = None
+    limits: SafetyLimits = None
+
+    def __post_init__(self) -> None:
+        if self.calibration is None:
+            self.calibration = Calibration()
+        if self.limits is None:
+            self.limits = SafetyLimits()
+
+
+@dataclass
+class Position:
+    raw_azimuth: float
+    raw_elevation: float
+    azimuth: float
+    elevation: float
+
+
+AXIS_MAPS = {
+    Axis.AZIMUTH: AxisMap(prefix=0xF0, positive_channel=0x04, negative_channel=0x03),
+    Axis.ELEVATION: AxisMap(prefix=0xF1, positive_channel=0x01, negative_channel=0x02),
+}
+
+
+class WinTrakController:
+    """Low-level serial controller for the decoded WinTrak Arduino protocol."""
+
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = 9600,
+        timeout: float = 0.5,
+        write_timeout: float = 0.5,
+        open_delay: float = 2.5,
+        trace: Optional[Callable[[str, bytes], None]] = None,
+    ) -> None:
+        if serial is None:
+            raise RuntimeError("pyserial is required. Install with: python3 -m pip install pyserial")
+        self.serial = serial.Serial(
+            port=port,
+            baudrate=baudrate,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=timeout,
+            write_timeout=write_timeout,
+        )
+        self.trace = trace
+        if open_delay > 0:
+            time.sleep(open_delay)
+            self.serial.reset_input_buffer()
+
+    def close(self) -> None:
+        self.serial.close()
+
+    def initialize(self) -> None:
+        self._write_read(bytes([0x6F]), 0)
+        self._write_read(bytes([0xF0, 0x09]), 3)
+        self._write_read(bytes([0xF0, 0x0B]), 2)
+        self._write_read(bytes([0xF0, 0x28]), 5)
+        self.read_azimuth()
+        self._write_read(bytes([0xF1, 0x09]), 3)
+        self._write_read(bytes([0xF1, 0x0B]), 2)
+        self._write_read(bytes([0xF1, 0x28]), 5)
+        self.read_elevation()
+
+    def read_azimuth(self) -> float:
+        return self._read_angle(bytes([0x10]))
+
+    def read_elevation(self) -> float:
+        return self._read_angle(bytes([0x11]))
+
+    def azimuth_cw(self, speed: int = 100) -> None:
+        self._move(Axis.AZIMUTH, AXIS_MAPS[Axis.AZIMUTH].positive_channel, speed)
+
+    def azimuth_ccw(self, speed: int = 100) -> None:
+        self._move(Axis.AZIMUTH, AXIS_MAPS[Axis.AZIMUTH].negative_channel, speed)
+
+    def elevation_up(self, speed: int = 100) -> None:
+        self._move(Axis.ELEVATION, AXIS_MAPS[Axis.ELEVATION].positive_channel, speed)
+
+    def elevation_down(self, speed: int = 100) -> None:
+        self._move(Axis.ELEVATION, AXIS_MAPS[Axis.ELEVATION].negative_channel, speed)
+
+    def stop_azimuth(self) -> None:
+        self._stop_axis(Axis.AZIMUTH)
+
+    def stop_elevation(self) -> None:
+        self._stop_axis(Axis.ELEVATION)
+
+    def stop_all(self) -> None:
+        for axis in (Axis.ELEVATION, Axis.AZIMUTH):
+            mapping = AXIS_MAPS[axis]
+            self._set_enable(axis, mapping.positive_channel, 0)
+            self._set_enable(axis, mapping.negative_channel, 0)
+        for axis in (Axis.ELEVATION, Axis.AZIMUTH):
+            mapping = AXIS_MAPS[axis]
+            self._set_speed(axis, mapping.positive_channel, 0)
+            self._set_speed(axis, mapping.negative_channel, 0)
+
+    def oled_write(self, prefix: int, column: int, row: int, text: str, width: Optional[int] = None) -> None:
+        if width is not None:
+            text = text[:width].ljust(width)
+        payload = text.encode("ascii", errors="replace") + b"\x00"
+        command = bytes([prefix, 0x35, column & 0xFF, row & 0xFF, len(payload) & 0xFF]) + payload
+        self._send_ack(command)
+
+    def oled_status(self, label: str, position: Position, mode: str, fault: str = "") -> None:
+        state = fault[:7].upper() if fault else "SAFE"
+        self.oled_write(0xF0, 0, 0, label.upper(), width=8)
+        self.oled_write(0xF0, 10, 0, state, width=6)
+        self.oled_write(0xF0, 0, 1, "AZ ", width=3)
+        self.oled_write(0xF1, 0, 2, "EL ", width=3)
+        self.oled_write(0xF0, 3, 1, f"{position.azimuth:6.2f}", width=6)
+        self.oled_write(0xF1, 3, 2, f"{position.elevation:6.2f}", width=6)
+        self.oled_write(0xF0, 0, 5, mode.upper(), width=8)
+        self.oled_write(0xF0, 0, 6, "RAWAZ", width=5)
+        self.oled_write(0xF1, 0, 7, "RAWEL", width=5)
+        self.oled_write(0xF0, 6, 6, f"{position.raw_azimuth:6.2f}", width=6)
+        self.oled_write(0xF1, 6, 7, f"{position.raw_elevation:6.2f}", width=6)
+
+    def _move(self, axis: Axis, channel: int, speed: int) -> None:
+        mapping = AXIS_MAPS[axis]
+        self._set_speed(axis, mapping.positive_channel, 0)
+        self._set_speed(axis, mapping.negative_channel, 0)
+        self._set_speed(axis, channel, clamp_speed(speed))
+        self._set_enable(axis, channel, 1)
+
+    def _stop_axis(self, axis: Axis) -> None:
+        mapping = AXIS_MAPS[axis]
+        self._set_enable(axis, mapping.positive_channel, 0)
+        self._set_enable(axis, mapping.negative_channel, 0)
+        self._set_speed(axis, mapping.positive_channel, 0)
+        self._set_speed(axis, mapping.negative_channel, 0)
+
+    def _set_enable(self, axis: Axis, channel: int, enabled: int) -> None:
+        self._send_ack(bytes([AXIS_MAPS[axis].prefix, 0x32, channel, 0x01 if enabled else 0x00]))
+
+    def _set_speed(self, axis: Axis, channel: int, speed: int) -> None:
+        self._send_ack(bytes([AXIS_MAPS[axis].prefix, 0x33, channel, clamp_speed(speed)]))
+
+    def _send_ack(self, command: bytes) -> None:
+        reply = self._write_read(command, 1)
+        if reply != b"\x00":
+            raise WinTrakProtocolError(f"Expected ACK 00 for {command.hex(' ')}, got {reply.hex(' ')}")
+
+    def _read_angle(self, command: bytes) -> float:
+        reply = self._write_read(command, 2)
+        if len(reply) != 2:
+            raise WinTrakProtocolError(f"Expected 2-byte angle, got {reply.hex(' ')}")
+        return int.from_bytes(reply, byteorder="big", signed=False) / 100.0
+
+    def _write_read(self, command: bytes, reply_length: int) -> bytes:
+        self.serial.reset_input_buffer()
+        if self.trace:
+            self.trace("TX", command)
+        self.serial.write(command)
+        self.serial.flush()
+        if reply_length == 0:
+            return b""
+        reply = self.serial.read(reply_length)
+        if self.trace:
+            self.trace("RX", reply)
+        if len(reply) != reply_length:
+            raise WinTrakProtocolError(
+                f"Command {command.hex(' ')} expected {reply_length} byte(s), got {len(reply)}: {reply.hex(' ')}"
+            )
+        return reply
+
+
+class SafeAntenna:
+    """Thread-safe high-level antenna wrapper with calibration and limits."""
+
+    def __init__(self, config: AntennaConfig) -> None:
+        self.config = config
+        self.controller = WinTrakController(config.port, baudrate=config.baud, open_delay=config.open_delay)
+        self.lock = threading.RLock()
+        self.last_position: Optional[Position] = None
+        self.fault = ""
+        with self.lock:
+            self.controller.initialize()
+            self.last_position = self.read_position_locked()
+            self.config.limits.assert_position_allowed(self.last_position.azimuth, self.last_position.elevation)
+
+    def close(self) -> None:
+        with self.lock:
+            try:
+                self.controller.stop_all()
+            finally:
+                self.controller.close()
+
+    def read_position(self) -> Position:
+        with self.lock:
+            return self.read_position_locked()
+
+    def read_position_locked(self) -> Position:
+        raw_az = self.controller.read_azimuth()
+        raw_el = self.controller.read_elevation()
+        pos = Position(
+            raw_azimuth=raw_az,
+            raw_elevation=raw_el,
+            azimuth=self.config.calibration.apply_az(raw_az),
+            elevation=self.config.calibration.apply_el(raw_el),
+        )
+        self.config.limits.assert_position_allowed(pos.azimuth, pos.elevation)
+        self.last_position = pos
+        self.fault = ""
+        return pos
+
+    def calibrate(self, actual_azimuth: float, actual_elevation: float) -> Position:
+        with self.lock:
+            raw_az = self.controller.read_azimuth()
+            raw_el = self.controller.read_elevation()
+            self.config.calibration.az_offset = shortest_angle_delta(raw_az, actual_azimuth)
+            self.config.calibration.el_offset = actual_elevation - raw_el
+            return self.read_position_locked()
+
+    def guarded_jog(
+        self,
+        direction: Direction,
+        speed: int,
+        seconds: float,
+        stop_event: threading.Event,
+        update_callback: Optional[Callable[[Position], None]] = None,
+    ) -> None:
+        seconds = min(max(0.0, seconds), self.config.limits.max_jog_seconds)
+        start = time.monotonic()
+        axis = Axis.AZIMUTH if direction in (Direction.AZ_CW, Direction.AZ_CCW) else Axis.ELEVATION
+        try:
+            with self.lock:
+                pos = self.read_position_locked()
+                self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                self._start_direction(direction, speed)
+
+            while not stop_event.is_set() and time.monotonic() - start < seconds:
+                time.sleep(self.config.limits.poll_interval)
+                with self.lock:
+                    pos = self.read_position_locked()
+                    self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                if update_callback:
+                    update_callback(pos)
+        except Exception as exc:
+            self.fault = str(exc)
+            raise
+        finally:
+            with self.lock:
+                if axis == Axis.AZIMUTH:
+                    self.controller.stop_azimuth()
+                else:
+                    self.controller.stop_elevation()
+
+    def stop_all(self) -> None:
+        with self.lock:
+            self.controller.stop_all()
+
+    def update_oled(self, mode: str = "MANUAL") -> None:
+        with self.lock:
+            pos = self.last_position or self.read_position_locked()
+            self.controller.oled_status(self.config.name, pos, mode, self.fault)
+
+    def _start_direction(self, direction: Direction, speed: int) -> None:
+        if direction == Direction.AZ_CW:
+            self.controller.azimuth_cw(speed)
+        elif direction == Direction.AZ_CCW:
+            self.controller.azimuth_ccw(speed)
+        elif direction == Direction.EL_UP:
+            self.controller.elevation_up(speed)
+        elif direction == Direction.EL_DOWN:
+            self.controller.elevation_down(speed)
+        else:
+            raise ValueError(f"Unsupported direction: {direction}")
+
+
+def normalize_degrees(value: float) -> float:
+    value = math.fmod(value, 360.0)
+    if value < 0:
+        value += 360.0
+    return value
+
+
+def shortest_angle_delta(raw: float, actual: float) -> float:
+    return ((normalize_degrees(actual) - normalize_degrees(raw) + 540.0) % 360.0) - 180.0
+
+
+def clamp_speed(speed: int) -> int:
+    return max(0, min(100, int(speed)))

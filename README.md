@@ -1,0 +1,135 @@
+# WT_2 Two-Antenna Safety Controller
+
+WT_2 is a GUI controller for two WinTrak Arduino/SVH3 antenna drive units.
+
+It keeps the decoded serial protocol from WT_1, but adds the pieces needed
+before automatic tracking is safe:
+
+- one GUI controlling both antenna controllers
+- persistent per-antenna configuration
+- calibration offsets
+- calibrated and raw position display
+- software azimuth/elevation limits
+- guarded jogs that poll during movement
+- stop per antenna and stop all
+- front-panel OLED updates with safety state instead of frequency
+
+## Install
+
+On the Raspberry Pi:
+
+```bash
+sudo apt update
+sudo apt install -y python3-serial python3-tk
+```
+
+Copy and edit the config:
+
+```bash
+cp wt2.ini.example wt2.ini
+nano wt2.ini
+```
+
+Use stable device paths if available:
+
+```bash
+ls -l /dev/serial/by-id/
+```
+
+## Run
+
+```bash
+python3 wt2_gui.py
+```
+
+Or specify another config:
+
+```bash
+python3 wt2_gui.py --config wt2.ini
+```
+
+## First Use
+
+1. Check `wt2.ini` ports and limits.
+2. Start the GUI.
+3. Press `Connect`.
+4. Confirm raw and calibrated positions display for both antennas.
+5. Press `OLED All` to update the controller displays.
+6. Use short guarded jogs only after confirming the displayed positions are sensible.
+
+## Calibration
+
+For each antenna:
+
+1. Point the antenna to a known physical position.
+2. Enter the actual AZ and EL in the antenna panel.
+3. Press `Calibrate`.
+
+The GUI reads the raw encoder positions and stores offsets in `wt2.ini`:
+
+```ini
+az_offset = ...
+el_offset = ...
+```
+
+Status then shows both raw and calibrated positions. Software limits use the
+calibrated position.
+
+## Safety Limits
+
+Each antenna has independent limits:
+
+```ini
+az_min = 270.000
+az_max = 265.000
+el_min = 0.000
+el_max = 87.000
+az_margin = 0.500
+el_margin = 0.500
+max_jog_seconds = 5.000
+poll_interval = 0.200
+```
+
+Azimuth supports wrap-around. For example:
+
+```ini
+az_min = 270
+az_max = 265
+```
+
+means the allowed range is:
+
+```text
+270 -> 360 and 0 -> 265
+```
+
+The GUI refuses a move if the current calibrated position is outside limits or
+too close to the relevant limit. While a jog is active, it polls the encoder and
+stops that axis if a safety check fails.
+
+Because there are no physical limit switches, loss of encoder replies or any
+protocol error is treated as a fault and movement stops.
+
+## OLED Display
+
+WT_2 writes the OLED over the decoded display command:
+
+```text
+F0/F1 35 column row length ASCII_TEXT 00
+```
+
+The display no longer shows frequency. That area is used for safety state:
+
+```text
+SAFE
+FAULT
+LIMIT
+```
+
+The OLED shows calibrated AZ/EL and raw encoder AZ/EL so each controller can be
+checked without relying only on the Raspberry Pi screen.
+
+## Not Yet Included
+
+WT_2 deliberately does not include automatic tracking yet. That should come
+after calibration and software-limit behaviour are proven on both antennas.

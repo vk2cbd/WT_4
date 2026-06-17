@@ -1,0 +1,34 @@
+[antenna:antenna_a]
+port = /dev/ttyUSB0
+baud = 9600
+open_delay = 5
+
+# Calibration offsets are written by the GUI calibration button.
+az_offset = 0.000000
+el_offset = 0.000000
+
+# Azimuth limit supports wrap-around. 270..265 means allowed range is
+# 270->360 plus 0->265.
+az_min = 270.000
+az_max = 265.000
+el_min = 0.000
+el_max = 87.000
+az_margin = 0.500
+el_margin = 0.500
+max_jog_seconds = 5.000
+poll_interval = 0.200
+
+[antenna:antenna_b]
+port = /dev/ttyUSB1
+baud = 9600
+open_delay = 5
+az_offset = 0.000000
+el_offset = 0.000000
+az_min = 270.000
+az_max = 265.000
+el_min = 0.000
+el_max = 87.000
+az_margin = 0.500
+el_margin = 0.500
+max_jog_seconds = 5.000
+poll_interval = 0.200
