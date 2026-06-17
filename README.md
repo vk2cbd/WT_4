@@ -54,7 +54,7 @@ python3 wt2_gui.py --config wt2.ini
 2. Start the GUI.
 3. Press `Connect`.
 4. Confirm raw and calibrated positions display for both antennas.
-5. Press `OLED All` to update the controller displays.
+5. Confirm each controller OLED has populated with the current safety/status display.
 6. Use short guarded jogs only after confirming the displayed positions are sensible.
 
 ## Calibration

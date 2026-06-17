@@ -178,13 +178,24 @@ class WT2App(tk.Tk):
         for name, config in self.configs.items():
             if name in self.sessions:
                 continue
-            self.run_worker(lambda cfg=config: SafeAntenna(cfg), lambda session, n=name: self.attach_session(n, session), self.set_status)
+            self.run_worker(
+                lambda cfg=config: self.connect_session(cfg),
+                lambda session, n=name: self.attach_session(n, session),
+                self.set_status,
+            )
+
+    def connect_session(self, config) -> SafeAntenna:
+        session = SafeAntenna(config)
+        session.update_oled("MANUAL")
+        return session
 
     def attach_session(self, name: str, session: SafeAntenna) -> None:
         self.sessions[name] = session
         if name in self.panels:
             self.panels[name].attach(session)
-        self.status_var.set(f"{name} connected.")
+        connected = len(self.sessions)
+        total = len(self.configs)
+        self.status_var.set(f"Connected {connected}/{total} antennas. Guarded manual mode ready.")
 
     def refresh_all(self) -> None:
         for panel in self.panels.values():
