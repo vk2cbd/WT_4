@@ -11,7 +11,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Optional
 
-from wt2_config import load_configs, load_site_config, save_configs
+from wt2_config import SiteConfig, load_configs, load_site_config, save_configs, save_site_config
 from wt2_driver import AntennaConfig, Direction, Position, SafeAntenna
 from wt2_solar import SunPosition, sun_position
 
@@ -376,9 +376,14 @@ class WT2App(tk.Tk):
         self.events: queue.Queue[tuple[str, object, object]] = queue.Queue()
         self.tracking_stop_event = threading.Event()
         self.tracking_active = False
-        self.sun_slew_active = False
         self.sun_az_var = tk.StringVar(value="Sun AZ --")
         self.sun_el_var = tk.StringVar(value="Sun EL --")
+        self.site_lat_var = tk.StringVar(value=f"{self.site.latitude:0.6f}")
+        self.site_lon_var = tk.StringVar(value=f"{self.site.longitude:0.6f}")
+        self.track_interval_var = tk.StringVar(value=f"{self.site.track_interval_seconds:0.1f}")
+        self.track_tolerance_var = tk.StringVar(value=f"{self.site.track_tolerance_degrees:0.1f}")
+        self.slow_speed_var = tk.StringVar(value=str(self.site.slow_speed))
+        self.slow_threshold_var = tk.StringVar(value=f"{self.site.slow_threshold_degrees:0.1f}")
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -390,7 +395,6 @@ class WT2App(tk.Tk):
         ttk.Button(top, text="Refresh All", command=self.refresh_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="OLED All", command=self.oled_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Limits", command=self.open_limits).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Sun Once", command=self.sun_once).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Track Sun", command=self.start_sun_tracking).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Stop Track", command=self.stop_sun_tracking).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="STOP ALL", command=self.stop_all).pack(side="right")
@@ -400,6 +404,16 @@ class WT2App(tk.Tk):
         target_bar.pack(fill="x")
         ttk.Label(target_bar, textvariable=self.sun_az_var).pack(side="left")
         ttk.Label(target_bar, textvariable=self.sun_el_var).pack(side="left", padx=(16, 0))
+
+        tracking = ttk.Frame(self, padding=(8, 0, 8, 4))
+        tracking.pack(fill="x")
+        self._tracking_entry(tracking, "Lat", self.site_lat_var, 0, 10)
+        self._tracking_entry(tracking, "Lon", self.site_lon_var, 2, 10)
+        self._tracking_entry(tracking, "Interval", self.track_interval_var, 4, 5)
+        self._tracking_entry(tracking, "Tol", self.track_tolerance_var, 6, 5)
+        self._tracking_entry(tracking, "Slow speed", self.slow_speed_var, 8, 4)
+        self._tracking_entry(tracking, "Slow deg", self.slow_threshold_var, 10, 5)
+        ttk.Button(tracking, text="Save Tracking", command=self.commit_tracking_settings).grid(row=0, column=12, padx=(8, 0))
 
         body = ttk.Frame(self, padding=8)
         body.pack(fill="both", expand=True)
@@ -418,6 +432,12 @@ class WT2App(tk.Tk):
 
         self.after(100, self.process_events)
         self.after(1500, self.periodic_refresh)
+
+    def _tracking_entry(self, parent: ttk.Frame, label: str, variable: tk.StringVar, column: int, width: int) -> None:
+        ttk.Label(parent, text=label).grid(row=0, column=column, sticky="w", padx=(0, 2))
+        entry = ttk.Entry(parent, textvariable=variable, width=width)
+        entry.grid(row=0, column=column + 1, sticky="w", padx=(0, 8))
+        entry.bind("<Return>", self.commit_tracking_settings)
 
     def connect_all(self) -> None:
         for name, config in self.configs.items():
@@ -475,32 +495,14 @@ class WT2App(tk.Tk):
         for session in self.sessions.values():
             self.run_worker(lambda s=session: s.update_oled("MANUAL"), lambda _result: None, self.set_status)
 
-    def sun_once(self) -> None:
-        if self.tracking_active or self.sun_slew_active:
-            self.status_var.set("Sun slew or tracking already active.")
-            return
-        if not self.sessions:
-            self.status_var.set("Connect antennas before Sun slew.")
-            return
-        self.tracking_stop_event.clear()
-        self.sun_slew_active = True
-        target = self.current_sun_position()
-        self.apply_sun_position(target)
-        self.run_worker(
-            lambda: self.slew_all_to_target(target, "SUN"),
-            self.finish_sun_once,
-            self.fail_sun_once,
-        )
-
     def start_sun_tracking(self) -> None:
-        if self.sun_slew_active:
-            self.status_var.set("Wait for Sun Once to finish before starting tracking.")
-            return
         if self.tracking_active:
             self.status_var.set("Sun tracking already active.")
             return
         if not self.sessions:
             self.status_var.set("Connect antennas before Sun tracking.")
+            return
+        if not self.commit_tracking_settings():
             return
         self.tracking_stop_event.clear()
         self.tracking_active = True
@@ -531,6 +533,49 @@ class WT2App(tk.Tk):
     def current_sun_position(self) -> SunPosition:
         return sun_position(self.site.latitude, self.site.longitude)
 
+    def commit_tracking_settings(self, _event: Optional[object] = None) -> bool:
+        try:
+            site = SiteConfig(
+                latitude=float(self.site_lat_var.get()),
+                longitude=float(self.site_lon_var.get()),
+                track_interval_seconds=float(self.track_interval_var.get()),
+                track_tolerance_degrees=float(self.track_tolerance_var.get()),
+                slow_speed=int(self.slow_speed_var.get()),
+                slow_threshold_degrees=float(self.slow_threshold_var.get()),
+            )
+            self.validate_site(site)
+        except ValueError:
+            self.status_var.set("Tracking settings must be numeric.")
+            return False
+        except RuntimeError as exc:
+            self.status_var.set(str(exc))
+            return False
+        site.slow_speed = max(0, min(100, int(site.slow_speed)))
+        self.site = site
+        self.site_lat_var.set(f"{site.latitude:0.6f}")
+        self.site_lon_var.set(f"{site.longitude:0.6f}")
+        self.track_interval_var.set(f"{site.track_interval_seconds:0.1f}")
+        self.track_tolerance_var.set(f"{site.track_tolerance_degrees:0.1f}")
+        self.slow_speed_var.set(str(site.slow_speed))
+        self.slow_threshold_var.set(f"{site.slow_threshold_degrees:0.1f}")
+        save_site_config(self.config_path, site)
+        self.status_var.set("Tracking settings saved.")
+        return True
+
+    def validate_site(self, site: SiteConfig) -> None:
+        if not (-90.0 <= site.latitude <= 90.0):
+            raise RuntimeError("Latitude must be -90..90 degrees.")
+        if not (-180.0 <= site.longitude <= 180.0):
+            raise RuntimeError("Longitude must be -180..180 degrees.")
+        if not (2.0 <= site.track_interval_seconds <= 3600.0):
+            raise RuntimeError("Tracking interval must be 2..3600 seconds.")
+        if not (0.1 <= site.track_tolerance_degrees <= 10.0):
+            raise RuntimeError("Tracking tolerance must be 0.1..10.0 degrees.")
+        if not (0 <= site.slow_speed <= 100):
+            raise RuntimeError("Slow speed must be 0..100.")
+        if not (site.track_tolerance_degrees <= site.slow_threshold_degrees <= 30.0):
+            raise RuntimeError("Slow deg must be at least tolerance and no more than 30 degrees.")
+
     def apply_sun_position(self, target: SunPosition) -> None:
         self.sun_az_var.set(f"Sun AZ {target.azimuth:0.2f}")
         self.sun_el_var.set(f"Sun EL {target.elevation:0.2f}")
@@ -553,6 +598,8 @@ class WT2App(tk.Tk):
                         panel.speed_value,
                         self.tracking_stop_event,
                         self.site.track_tolerance_degrees,
+                        self.site.slow_speed,
+                        self.site.slow_threshold_degrees,
                         progress,
                     )
                     session.update_oled(mode)
@@ -582,14 +629,6 @@ class WT2App(tk.Tk):
         self.apply_sun_position(target)
         if not self.tracking_stop_event.is_set():
             self.status_var.set(f"Sun target reached AZ {target.azimuth:0.2f} EL {target.elevation:0.2f}.")
-
-    def finish_sun_once(self, target: SunPosition) -> None:
-        self.sun_slew_active = False
-        self.finish_sun_slew(target)
-
-    def fail_sun_once(self, text: str) -> None:
-        self.sun_slew_active = False
-        self.set_status(text)
 
     def open_limits(self) -> None:
         if not self.configs:

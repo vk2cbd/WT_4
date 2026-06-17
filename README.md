@@ -40,7 +40,8 @@ section names. The example uses:
 [antenna:West]
 ```
 
-Set the observer site in the same config:
+The observer site and tracking settings are shown in the GUI and saved to the
+same config:
 
 ```ini
 [site]
@@ -48,6 +49,8 @@ latitude = -32.724000
 longitude = 152.130167
 track_interval_seconds = 20.0
 track_tolerance_degrees = 0.5
+slow_speed = 20
+slow_threshold_degrees = 3.0
 ```
 
 Use stable device paths if available:
@@ -172,16 +175,21 @@ protocol error is treated as a fault and movement stops.
 
 ## Sun Tracking
 
-WT_2 includes a first-pass Sun target mode:
+WT_2 includes a first-pass Sun tracking mode:
 
-- `Sun Once` computes the current Sun AZ/EL and slews both connected antennas toward it.
-- `Track Sun` repeats the Sun calculation and slew cycle using `track_interval_seconds`.
+- `Track Sun` computes the current Sun AZ/EL and slews both connected antennas toward it.
 - `Stop Track` stops tracking and sends stop commands.
+- AZ and EL are allowed to slew concurrently on each antenna.
+- `Interval`, `Tol`, `Slow speed`, and `Slow deg` are editable in the GUI.
 
 Sun tracking uses the same calibrated positions, software limits, margins, jog
 speed, max-jog watchdog, encoder polling, and stop commands as manual movement.
 If the Sun target is outside the configured safe limits, WT_2 stops instead of
 moving.
+
+Each antenna uses its own `Speed` value as the normal slew rate. When an axis is
+within `Slow deg` of the target, WT_2 changes that axis to `Slow speed` until it
+reaches the tracking tolerance.
 
 Use low speed for the first tests and confirm the displayed Sun AZ/EL is
 reasonable before allowing larger slews.

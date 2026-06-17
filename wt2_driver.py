@@ -382,55 +382,68 @@ class SafeAntenna:
         speed: int,
         stop_event: threading.Event,
         tolerance: float = 0.5,
+        slow_speed: Optional[int] = None,
+        slow_threshold: float = 3.0,
         update_callback: Optional[Callable[[Position], None]] = None,
     ) -> Position:
         target_azimuth = normalize_degrees(target_azimuth)
         tolerance = max(0.1, float(tolerance))
+        slow_threshold = max(tolerance, float(slow_threshold))
+        fast_speed = clamp_speed(speed)
+        slow_speed = clamp_speed(fast_speed if slow_speed is None else slow_speed)
         self.config.limits.assert_position_allowed(target_azimuth, target_elevation)
 
         pos = self.read_position()
-        if abs(shortest_angle_delta(pos.azimuth, target_azimuth)) > tolerance:
-            direction = Direction.AZ_CW if shortest_angle_delta(pos.azimuth, target_azimuth) > 0 else Direction.AZ_CCW
-            pos = self._guarded_slew_axis(Axis.AZIMUTH, direction, target_azimuth, speed, stop_event, tolerance, update_callback)
-        if stop_event.is_set():
+        az_error = shortest_angle_delta(pos.azimuth, target_azimuth)
+        el_error = target_elevation - pos.elevation
+        active: dict[Axis, dict[str, object]] = {}
+        if abs(az_error) > tolerance:
+            active[Axis.AZIMUTH] = {
+                "direction": Direction.AZ_CW if az_error > 0 else Direction.AZ_CCW,
+                "target": target_azimuth,
+                "previous_error": az_error,
+                "slow": False,
+            }
+        if abs(el_error) > tolerance:
+            active[Axis.ELEVATION] = {
+                "direction": Direction.EL_UP if el_error > 0 else Direction.EL_DOWN,
+                "target": target_elevation,
+                "previous_error": el_error,
+                "slow": False,
+            }
+        if not active:
             return pos
-        if abs(target_elevation - pos.elevation) > tolerance:
-            direction = Direction.EL_UP if target_elevation > pos.elevation else Direction.EL_DOWN
-            pos = self._guarded_slew_axis(Axis.ELEVATION, direction, target_elevation, speed, stop_event, tolerance, update_callback)
-        return pos
 
-    def _guarded_slew_axis(
-        self,
-        axis: Axis,
-        direction: Direction,
-        target: float,
-        speed: int,
-        stop_event: threading.Event,
-        tolerance: float,
-        update_callback: Optional[Callable[[Position], None]],
-    ) -> Position:
         deadline = time.monotonic() + self.config.limits.max_jog_seconds
-        previous_error: Optional[float] = None
         try:
             with self.lock:
                 pos = self.read_position_locked()
-                self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
-                self._start_direction(direction, speed)
+                for state in active.values():
+                    direction = state["direction"]
+                    self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                    self._start_direction(direction, fast_speed)
 
-            while not stop_event.is_set() and time.monotonic() < deadline:
+            while active and not stop_event.is_set() and time.monotonic() < deadline:
                 time.sleep(self.config.limits.poll_interval)
                 with self.lock:
                     pos = self.read_position_locked()
-                    self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
-                error = shortest_angle_delta(pos.azimuth, target) if axis == Axis.AZIMUTH else target - pos.elevation
+                    for axis, state in list(active.items()):
+                        direction = state["direction"]
+                        self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                        target = state["target"]
+                        error = shortest_angle_delta(pos.azimuth, target) if axis == Axis.AZIMUTH else target - pos.elevation
+                        previous_error = state["previous_error"]
+                        if abs(error) <= tolerance or _crossed_target(previous_error, error):
+                            self._stop_axis(axis)
+                            active.pop(axis)
+                            continue
+                        if not state["slow"] and abs(error) <= slow_threshold:
+                            self._set_axis_direction_speed(axis, direction, slow_speed)
+                            state["slow"] = True
+                        state["previous_error"] = error
                 if update_callback:
                     update_callback(pos)
-                if abs(error) <= tolerance:
-                    return pos
-                if previous_error is not None and _crossed_target(previous_error, error):
-                    return pos
-                previous_error = error
-            if not stop_event.is_set():
+            if active and not stop_event.is_set():
                 raise SafetyError(f"Slew timed out after {self.config.limits.max_jog_seconds:0.1f}s")
             return self.read_position()
         except Exception as exc:
@@ -438,10 +451,7 @@ class SafeAntenna:
             raise
         finally:
             with self.lock:
-                if axis == Axis.AZIMUTH:
-                    self.controller.stop_azimuth()
-                else:
-                    self.controller.stop_elevation()
+                self.controller.stop_all()
 
     def stop_all(self) -> None:
         with self.lock:
@@ -468,6 +478,13 @@ class SafeAntenna:
             self.controller.elevation_down(speed)
         else:
             raise ValueError(f"Unsupported direction: {direction}")
+
+    def _set_axis_direction_speed(self, axis: Axis, direction: Direction, speed: int) -> None:
+        if axis == Axis.AZIMUTH:
+            channel = AXIS_MAPS[axis].positive_channel if direction == Direction.AZ_CW else AXIS_MAPS[axis].negative_channel
+        else:
+            channel = AXIS_MAPS[axis].positive_channel if direction == Direction.EL_UP else AXIS_MAPS[axis].negative_channel
+        self.controller._set_speed(axis, channel, speed)
 
 
 def normalize_degrees(value: float) -> float:
