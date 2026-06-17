@@ -126,6 +126,158 @@ class LimitsDialog(tk.Toplevel):
             raise RuntimeError(f"{name}: poll interval must be 0.05..5.0 seconds.")
 
 
+class ObserverDialog(tk.Toplevel):
+    def __init__(self, app: "WT2App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("Observer")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        self.latitude_var = tk.StringVar(value=f"{app.site.latitude:0.6f}")
+        self.longitude_var = tk.StringVar(value=f"{app.site.longitude:0.6f}")
+
+        body = ttk.Frame(self, padding=10)
+        body.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(body, text="Latitude").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Entry(body, textvariable=self.latitude_var, width=12).grid(row=0, column=1, sticky="w", pady=2)
+        ttk.Label(body, text="Longitude").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(body, textvariable=self.longitude_var, width=12).grid(row=1, column=1, sticky="w", pady=2)
+
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.grid(row=1, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(buttons, text="Save", command=self.save).grid(row=0, column=2)
+
+    def save(self) -> None:
+        try:
+            site = SiteConfig(
+                latitude=float(self.latitude_var.get()),
+                longitude=float(self.longitude_var.get()),
+                track_interval_seconds=self.app.site.track_interval_seconds,
+                track_tolerance_degrees=self.app.site.track_tolerance_degrees,
+                slow_speed=self.app.site.slow_speed,
+                slow_threshold_degrees=self.app.site.slow_threshold_degrees,
+            )
+            self.app.validate_observer(site)
+        except ValueError:
+            messagebox.showerror("Invalid Observer", "Observer location must be numeric.", parent=self)
+            return
+        except RuntimeError as exc:
+            messagebox.showerror("Invalid Observer", str(exc), parent=self)
+            return
+        self.app.site = site
+        self.app.save_site_settings("Observer saved.")
+        self.destroy()
+
+
+class TrackingDialog(tk.Toplevel):
+    def __init__(self, app: "WT2App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("Tracking")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        self.speed_vars: dict[str, tk.StringVar] = {}
+        self.max_jog_vars: dict[str, tk.StringVar] = {}
+        self.interval_var = tk.StringVar(value=f"{app.site.track_interval_seconds:0.1f}")
+        self.tolerance_var = tk.StringVar(value=f"{app.site.track_tolerance_degrees:0.2f}")
+        self.slow_speed_var = tk.StringVar(value=str(app.site.slow_speed))
+        self.slow_threshold_var = tk.StringVar(value=f"{app.site.slow_threshold_degrees:0.1f}")
+
+        body = ttk.Frame(self, padding=10)
+        body.grid(row=0, column=0, sticky="nsew")
+        self._spin_field(body, "Interval sec", self.interval_var, 0, 0.1, 10.0, 0.1, width=7)
+        self._spin_field(body, "Tolerance deg", self.tolerance_var, 1, 0.01, 0.20, 0.01, width=7)
+        self._field(body, "Slow speed", self.slow_speed_var, 2, width=7)
+        self._field(body, "Slow deg", self.slow_threshold_var, 3, width=7)
+
+        ttk.Separator(body, orient="horizontal").grid(row=4, column=0, columnspan=3, sticky="ew", pady=8)
+        ttk.Label(body, text="Antenna").grid(row=5, column=0, sticky="w")
+        ttk.Label(body, text="Speed").grid(row=5, column=1, sticky="w")
+        ttk.Label(body, text="Max jog").grid(row=5, column=2, sticky="w")
+        for row, (name, config) in enumerate(self.app.configs.items(), start=6):
+            self.speed_vars[name] = tk.StringVar(value=str(config.gui_speed))
+            self.max_jog_vars[name] = tk.StringVar(value=f"{config.limits.max_jog_seconds:0.0f}")
+            ttk.Label(body, text=name).grid(row=row, column=0, sticky="w", pady=2)
+            ttk.Entry(body, textvariable=self.speed_vars[name], width=7).grid(row=row, column=1, sticky="w", pady=2)
+            ttk.Entry(body, textvariable=self.max_jog_vars[name], width=7).grid(row=row, column=2, sticky="w", pady=2)
+
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.grid(row=1, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(buttons, text="Save", command=self.save).grid(row=0, column=2)
+
+    def _field(self, parent: ttk.Frame, label: str, variable: tk.StringVar, row: int, width: int) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Entry(parent, textvariable=variable, width=width).grid(row=row, column=1, sticky="w", pady=2)
+
+    def _spin_field(
+        self,
+        parent: ttk.Frame,
+        label: str,
+        variable: tk.StringVar,
+        row: int,
+        from_value: float,
+        to_value: float,
+        increment: float,
+        width: int,
+    ) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        tk.Spinbox(
+            parent,
+            textvariable=variable,
+            from_=from_value,
+            to=to_value,
+            increment=increment,
+            width=width,
+            format="%0.2f" if increment < 0.1 else "%0.1f",
+        ).grid(row=row, column=1, sticky="w", pady=2)
+
+    def save(self) -> None:
+        try:
+            site = SiteConfig(
+                latitude=self.app.site.latitude,
+                longitude=self.app.site.longitude,
+                track_interval_seconds=round(float(self.interval_var.get()), 1),
+                track_tolerance_degrees=round(float(self.tolerance_var.get()), 2),
+                slow_speed=int(self.slow_speed_var.get()),
+                slow_threshold_degrees=round(float(self.slow_threshold_var.get()), 1),
+            )
+            self.app.validate_site(site)
+            antenna_values = {
+                name: (int(self.speed_vars[name].get()), float(self.max_jog_vars[name].get()))
+                for name in self.app.configs
+            }
+            self._validate_antennas(antenna_values)
+        except ValueError:
+            messagebox.showerror("Invalid Tracking", "Tracking values must be numeric.", parent=self)
+            return
+        except RuntimeError as exc:
+            messagebox.showerror("Invalid Tracking", str(exc), parent=self)
+            return
+
+        self.app.site = site
+        for name, (speed, max_jog) in antenna_values.items():
+            config = self.app.configs[name]
+            config.gui_speed = speed
+            config.limits.max_jog_seconds = max_jog
+            if name in self.app.panels:
+                self.app.panels[name].sync_config_settings()
+        self.app.save_tracking_and_config("Tracking saved.")
+        self.destroy()
+
+    def _validate_antennas(self, values: dict[str, tuple[int, float]]) -> None:
+        for name, (speed, max_jog) in values.items():
+            if not (0 <= speed <= 100):
+                raise RuntimeError(f"{name}: speed must be 0..100.")
+            if not (1.0 <= max_jog <= 600.0):
+                raise RuntimeError(f"{name}: max jog must be 1..600 seconds.")
+
+
 class AntennaPanel(ttk.Frame):
     def __init__(self, master: tk.Misc, app: "WT2App", name: str, config: Optional[AntennaConfig] = None) -> None:
         super().__init__(master, padding=8)
@@ -176,21 +328,9 @@ class AntennaPanel(ttk.Frame):
         self._hold_button(control, "EL UP", Direction.EL_UP).grid(row=1, column=1, sticky="ew")
         self._hold_button(control, "EL DOWN", Direction.EL_DOWN).grid(row=2, column=1, sticky="ew")
 
-        settings = ttk.Frame(self)
-        settings.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Label(settings, text="Speed").grid(row=0, column=0, sticky="w")
-        speed_entry = ttk.Entry(settings, textvariable=self.speed_var, width=5)
-        speed_entry.grid(row=0, column=1, sticky="w")
-        speed_entry.bind("<Return>", self.commit_speed)
-        ttk.Label(settings, text="Max jog").grid(row=0, column=2, sticky="w", padx=(8, 0))
-        max_jog_entry = ttk.Entry(settings, textvariable=self.max_jog_var, width=5)
-        max_jog_entry.grid(row=0, column=3, sticky="w")
-        max_jog_entry.bind("<Return>", self.commit_max_jog)
-        ttk.Label(settings, text="Enter commits").grid(row=0, column=4, sticky="w", padx=(8, 0))
-
-        ttk.Button(self, text="STOP", command=self.stop).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(self, text="STOP", command=self.stop).grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(self, textvariable=self.fault_var, foreground="red", wraplength=260).grid(
-            row=11, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+            row=10, column=0, columnspan=2, sticky="ew", pady=(6, 0)
         )
 
     def _label_pair(self, row: int, label: str, variable: tk.StringVar) -> None:
@@ -378,12 +518,6 @@ class WT2App(tk.Tk):
         self.tracking_active = False
         self.sun_az_var = tk.StringVar(value="Sun AZ --")
         self.sun_el_var = tk.StringVar(value="Sun EL --")
-        self.site_lat_var = tk.StringVar(value=f"{self.site.latitude:0.6f}")
-        self.site_lon_var = tk.StringVar(value=f"{self.site.longitude:0.6f}")
-        self.track_interval_var = tk.StringVar(value=f"{self.site.track_interval_seconds:0.1f}")
-        self.track_tolerance_var = tk.StringVar(value=f"{self.site.track_tolerance_degrees:0.1f}")
-        self.slow_speed_var = tk.StringVar(value=str(self.site.slow_speed))
-        self.slow_threshold_var = tk.StringVar(value=f"{self.site.slow_threshold_degrees:0.1f}")
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -395,6 +529,8 @@ class WT2App(tk.Tk):
         ttk.Button(top, text="Refresh All", command=self.refresh_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="OLED All", command=self.oled_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Limits", command=self.open_limits).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Observer", command=self.open_observer).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Tracking", command=self.open_tracking).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Track Sun", command=self.start_sun_tracking).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Stop Track", command=self.stop_sun_tracking).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="STOP ALL", command=self.stop_all).pack(side="right")
@@ -404,16 +540,6 @@ class WT2App(tk.Tk):
         target_bar.pack(fill="x")
         ttk.Label(target_bar, textvariable=self.sun_az_var).pack(side="left")
         ttk.Label(target_bar, textvariable=self.sun_el_var).pack(side="left", padx=(16, 0))
-
-        tracking = ttk.Frame(self, padding=(8, 0, 8, 4))
-        tracking.pack(fill="x")
-        self._tracking_entry(tracking, "Lat", self.site_lat_var, 0, 10)
-        self._tracking_entry(tracking, "Lon", self.site_lon_var, 2, 10)
-        self._tracking_entry(tracking, "Interval", self.track_interval_var, 4, 5)
-        self._tracking_entry(tracking, "Tol", self.track_tolerance_var, 6, 5)
-        self._tracking_entry(tracking, "Slow speed", self.slow_speed_var, 8, 4)
-        self._tracking_entry(tracking, "Slow deg", self.slow_threshold_var, 10, 5)
-        ttk.Button(tracking, text="Save Tracking", command=self.commit_tracking_settings).grid(row=0, column=12, padx=(8, 0))
 
         body = ttk.Frame(self, padding=8)
         body.pack(fill="both", expand=True)
@@ -432,12 +558,6 @@ class WT2App(tk.Tk):
 
         self.after(100, self.process_events)
         self.after(1500, self.periodic_refresh)
-
-    def _tracking_entry(self, parent: ttk.Frame, label: str, variable: tk.StringVar, column: int, width: int) -> None:
-        ttk.Label(parent, text=label).grid(row=0, column=column, sticky="w", padx=(0, 2))
-        entry = ttk.Entry(parent, textvariable=variable, width=width)
-        entry.grid(row=0, column=column + 1, sticky="w", padx=(0, 8))
-        entry.bind("<Return>", self.commit_tracking_settings)
 
     def connect_all(self) -> None:
         for name, config in self.configs.items():
@@ -502,7 +622,10 @@ class WT2App(tk.Tk):
         if not self.sessions:
             self.status_var.set("Connect antennas before Sun tracking.")
             return
-        if not self.commit_tracking_settings():
+        try:
+            self.validate_site(self.site)
+        except RuntimeError as exc:
+            self.status_var.set(f"{exc} Open Tracking to update.")
             return
         self.tracking_stop_event.clear()
         self.tracking_active = True
@@ -533,48 +656,22 @@ class WT2App(tk.Tk):
     def current_sun_position(self) -> SunPosition:
         return sun_position(self.site.latitude, self.site.longitude)
 
-    def commit_tracking_settings(self, _event: Optional[object] = None) -> bool:
-        try:
-            site = SiteConfig(
-                latitude=float(self.site_lat_var.get()),
-                longitude=float(self.site_lon_var.get()),
-                track_interval_seconds=float(self.track_interval_var.get()),
-                track_tolerance_degrees=float(self.track_tolerance_var.get()),
-                slow_speed=int(self.slow_speed_var.get()),
-                slow_threshold_degrees=float(self.slow_threshold_var.get()),
-            )
-            self.validate_site(site)
-        except ValueError:
-            self.status_var.set("Tracking settings must be numeric.")
-            return False
-        except RuntimeError as exc:
-            self.status_var.set(str(exc))
-            return False
-        site.slow_speed = max(0, min(100, int(site.slow_speed)))
-        self.site = site
-        self.site_lat_var.set(f"{site.latitude:0.6f}")
-        self.site_lon_var.set(f"{site.longitude:0.6f}")
-        self.track_interval_var.set(f"{site.track_interval_seconds:0.1f}")
-        self.track_tolerance_var.set(f"{site.track_tolerance_degrees:0.1f}")
-        self.slow_speed_var.set(str(site.slow_speed))
-        self.slow_threshold_var.set(f"{site.slow_threshold_degrees:0.1f}")
-        save_site_config(self.config_path, site)
-        self.status_var.set("Tracking settings saved.")
-        return True
-
     def validate_site(self, site: SiteConfig) -> None:
-        if not (-90.0 <= site.latitude <= 90.0):
-            raise RuntimeError("Latitude must be -90..90 degrees.")
-        if not (-180.0 <= site.longitude <= 180.0):
-            raise RuntimeError("Longitude must be -180..180 degrees.")
-        if not (2.0 <= site.track_interval_seconds <= 3600.0):
-            raise RuntimeError("Tracking interval must be 2..3600 seconds.")
-        if not (0.1 <= site.track_tolerance_degrees <= 10.0):
-            raise RuntimeError("Tracking tolerance must be 0.1..10.0 degrees.")
+        self.validate_observer(site)
+        if not (0.1 <= site.track_interval_seconds <= 10.0):
+            raise RuntimeError("Tracking interval must be 0.1..10.0 seconds.")
+        if not (0.01 <= site.track_tolerance_degrees <= 0.2):
+            raise RuntimeError("Tracking tolerance must be 0.01..0.20 degrees.")
         if not (0 <= site.slow_speed <= 100):
             raise RuntimeError("Slow speed must be 0..100.")
         if not (site.track_tolerance_degrees <= site.slow_threshold_degrees <= 30.0):
             raise RuntimeError("Slow deg must be at least tolerance and no more than 30 degrees.")
+
+    def validate_observer(self, site: SiteConfig) -> None:
+        if not (-90.0 <= site.latitude <= 90.0):
+            raise RuntimeError("Latitude must be -90..90 degrees.")
+        if not (-180.0 <= site.longitude <= 180.0):
+            raise RuntimeError("Longitude must be -180..180 degrees.")
 
     def apply_sun_position(self, target: SunPosition) -> None:
         self.sun_az_var.set(f"Sun AZ {target.azimuth:0.2f}")
@@ -628,13 +725,31 @@ class WT2App(tk.Tk):
     def finish_sun_slew(self, target: SunPosition) -> None:
         self.apply_sun_position(target)
         if not self.tracking_stop_event.is_set():
-            self.status_var.set(f"Sun target reached AZ {target.azimuth:0.2f} EL {target.elevation:0.2f}.")
+            self.status_var.set("Sun target reached.")
 
     def open_limits(self) -> None:
         if not self.configs:
             self.status_var.set("No antenna configs loaded.")
             return
         LimitsDialog(self)
+
+    def open_observer(self) -> None:
+        ObserverDialog(self)
+
+    def open_tracking(self) -> None:
+        if not self.configs:
+            self.status_var.set("No antenna configs loaded.")
+            return
+        TrackingDialog(self)
+
+    def save_site_settings(self, message: str) -> None:
+        save_site_config(self.config_path, self.site)
+        self.status_var.set(message)
+
+    def save_tracking_and_config(self, message: str) -> None:
+        save_site_config(self.config_path, self.site)
+        save_configs(self.config_path, self.configs)
+        self.status_var.set(message)
 
     def stop_all(self) -> None:
         self.tracking_stop_event.set()

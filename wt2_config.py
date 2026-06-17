@@ -15,8 +15,8 @@ from wt2_driver import AntennaConfig, Calibration, SafetyLimits
 class SiteConfig:
     latitude: float = -32.724000
     longitude: float = 152.130167
-    track_interval_seconds: float = 20.0
-    track_tolerance_degrees: float = 0.5
+    track_interval_seconds: float = 2.0
+    track_tolerance_degrees: float = 0.10
     slow_speed: int = 20
     slow_threshold_degrees: float = 3.0
 
@@ -29,8 +29,8 @@ def load_site_config(path: Union[str, Path]) -> SiteConfig:
     return SiteConfig(
         latitude=parser.getfloat("site", "latitude", fallback=-32.724000),
         longitude=parser.getfloat("site", "longitude", fallback=152.130167),
-        track_interval_seconds=parser.getfloat("site", "track_interval_seconds", fallback=20.0),
-        track_tolerance_degrees=parser.getfloat("site", "track_tolerance_degrees", fallback=0.5),
+        track_interval_seconds=parser.getfloat("site", "track_interval_seconds", fallback=2.0),
+        track_tolerance_degrees=parser.getfloat("site", "track_tolerance_degrees", fallback=0.10),
         slow_speed=parser.getint("site", "slow_speed", fallback=20),
         slow_threshold_degrees=parser.getfloat("site", "slow_threshold_degrees", fallback=3.0),
     )
@@ -122,7 +122,7 @@ def _site_section(site: SiteConfig) -> dict[str, str]:
         "latitude": f"{site.latitude:.6f}",
         "longitude": f"{site.longitude:.6f}",
         "track_interval_seconds": f"{site.track_interval_seconds:.1f}",
-        "track_tolerance_degrees": f"{site.track_tolerance_degrees:.1f}",
+        "track_tolerance_degrees": f"{site.track_tolerance_degrees:.2f}",
         "slow_speed": str(max(0, min(100, int(site.slow_speed)))),
         "slow_threshold_degrees": f"{site.slow_threshold_degrees:.1f}",
     }
