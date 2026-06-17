@@ -7,11 +7,105 @@ import argparse
 import queue
 import threading
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from typing import Optional
 
 from wt2_config import load_configs, save_configs
 from wt2_driver import AntennaConfig, Direction, Position, SafeAntenna
+
+
+class LimitsDialog(tk.Toplevel):
+    def __init__(self, app: "WT2App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("Antenna Limits")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        self.entries: dict[str, dict[str, tk.StringVar]] = {}
+
+        tabs = ttk.Notebook(self)
+        tabs.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+
+        for name, config in app.configs.items():
+            frame = ttk.Frame(tabs, padding=10)
+            tabs.add(frame, text=name)
+            self.entries[name] = self._build_limit_fields(frame, config)
+
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.grid(row=1, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        ttk.Button(buttons, text="Cancel", command=self.destroy).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(buttons, text="Save", command=self.save).grid(row=0, column=2)
+
+    def _build_limit_fields(self, frame: ttk.Frame, config: AntennaConfig) -> dict[str, tk.StringVar]:
+        values = {
+            "az_min": tk.StringVar(value=f"{config.limits.az_min:0.3f}"),
+            "az_max": tk.StringVar(value=f"{config.limits.az_max:0.3f}"),
+            "el_min": tk.StringVar(value=f"{config.limits.el_min:0.3f}"),
+            "el_max": tk.StringVar(value=f"{config.limits.el_max:0.3f}"),
+            "az_margin": tk.StringVar(value=f"{config.limits.az_margin:0.3f}"),
+            "el_margin": tk.StringVar(value=f"{config.limits.el_margin:0.3f}"),
+            "max_jog_seconds": tk.StringVar(value=f"{config.limits.max_jog_seconds:0.1f}"),
+            "poll_interval": tk.StringVar(value=f"{config.limits.poll_interval:0.3f}"),
+        }
+        labels = [
+            ("AZ min", "az_min"),
+            ("AZ max", "az_max"),
+            ("EL min", "el_min"),
+            ("EL max", "el_max"),
+            ("AZ margin", "az_margin"),
+            ("EL margin", "el_margin"),
+            ("Max jog sec", "max_jog_seconds"),
+            ("Poll sec", "poll_interval"),
+        ]
+        for row, (label, key) in enumerate(labels):
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=2)
+            ttk.Entry(frame, textvariable=values[key], width=9).grid(row=row, column=1, sticky="w", pady=2)
+        return values
+
+    def save(self) -> None:
+        parsed: dict[str, dict[str, float]] = {}
+        try:
+            for name, values in self.entries.items():
+                parsed[name] = {key: float(value.get()) for key, value in values.items()}
+                self._validate_limits(name, parsed[name])
+        except ValueError:
+            messagebox.showerror("Invalid Limits", "All limit values must be numeric.", parent=self)
+            return
+        except RuntimeError as exc:
+            messagebox.showerror("Invalid Limits", str(exc), parent=self)
+            return
+
+        for name, values in parsed.items():
+            limits = self.app.configs[name].limits
+            limits.az_min = values["az_min"]
+            limits.az_max = values["az_max"]
+            limits.el_min = values["el_min"]
+            limits.el_max = values["el_max"]
+            limits.az_margin = values["az_margin"]
+            limits.el_margin = values["el_margin"]
+            limits.max_jog_seconds = values["max_jog_seconds"]
+            limits.poll_interval = values["poll_interval"]
+            if name in self.app.panels:
+                self.app.panels[name].sync_config_settings()
+
+        self.app.save_config("Limits saved.")
+        self.destroy()
+
+    def _validate_limits(self, name: str, values: dict[str, float]) -> None:
+        if not (0.0 <= values["az_min"] <= 360.0 and 0.0 <= values["az_max"] <= 360.0):
+            raise RuntimeError(f"{name}: AZ limits must be 0..360 degrees.")
+        if values["el_min"] >= values["el_max"]:
+            raise RuntimeError(f"{name}: EL min must be less than EL max.")
+        if not (-90.0 <= values["el_min"] <= 180.0 and -90.0 <= values["el_max"] <= 180.0):
+            raise RuntimeError(f"{name}: EL limits must be -90..180 degrees.")
+        if values["az_margin"] < 0.0 or values["el_margin"] < 0.0:
+            raise RuntimeError(f"{name}: margins cannot be negative.")
+        if not (1.0 <= values["max_jog_seconds"] <= 600.0):
+            raise RuntimeError(f"{name}: max jog must be 1..600 seconds.")
+        if not (0.05 <= values["poll_interval"] <= 5.0):
+            raise RuntimeError(f"{name}: poll interval must be 0.05..5.0 seconds.")
 
 
 class AntennaPanel(ttk.Frame):
@@ -94,10 +188,7 @@ class AntennaPanel(ttk.Frame):
 
     def attach(self, session: SafeAntenna) -> None:
         self.session = session
-        self.speed_value = session.config.gui_speed
-        self.max_jog_value = session.config.limits.max_jog_seconds
-        self.speed_var.set(str(self.speed_value))
-        self.max_jog_var.set(f"{self.max_jog_value:0.1f}")
+        self.sync_config_settings()
         self.status_var.set("CONNECTED")
         self.fault_var.set("")
         self.update_position(session.last_position)
@@ -108,6 +199,24 @@ class AntennaPanel(ttk.Frame):
         self.jog_thread_active = False
         self.status_var.set("DISCONNECTED")
         self.fault_var.set("")
+        self.clear_position_fields()
+        self.actual_az_var.set("")
+        self.actual_el_var.set("")
+
+    def clear_position_fields(self) -> None:
+        self.raw_az_var.set("--")
+        self.raw_el_var.set("--")
+        self.cal_az_var.set("--")
+        self.cal_el_var.set("--")
+
+    def sync_config_settings(self) -> None:
+        config = self.session.config if self.session else self.config
+        if not config:
+            return
+        self.speed_value = config.gui_speed
+        self.max_jog_value = config.limits.max_jog_seconds
+        self.speed_var.set(str(self.speed_value))
+        self.max_jog_var.set(f"{self.max_jog_value:0.1f}")
 
     def update_position(self, position: Optional[Position]) -> None:
         if position is None:
@@ -256,6 +365,7 @@ class WT2App(tk.Tk):
         ttk.Button(top, text="Disconnect", command=self.disconnect_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Refresh All", command=self.refresh_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="OLED All", command=self.oled_all).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Limits", command=self.open_limits).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="STOP ALL", command=self.stop_all).pack(side="right")
 
         ttk.Label(self, textvariable=self.status_var, padding=(8, 2)).pack(fill="x")
@@ -333,6 +443,12 @@ class WT2App(tk.Tk):
     def oled_all(self) -> None:
         for session in self.sessions.values():
             self.run_worker(lambda s=session: s.update_oled("MANUAL"), lambda _result: None, self.set_status)
+
+    def open_limits(self) -> None:
+        if not self.configs:
+            self.status_var.set("No antenna configs loaded.")
+            return
+        LimitsDialog(self)
 
     def stop_all(self) -> None:
         for panel in self.panels.values():

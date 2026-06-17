@@ -68,6 +68,9 @@ python3 wt2_gui.py --config wt2.ini
 6. Use guarded press-and-hold jogs only after confirming the displayed positions are sensible.
 7. Press `Disconnect` before unplugging or changing controller wiring.
 
+After disconnect, each antenna panel returns to its pre-connect blank position
+state so old readings are not mistaken for live encoder data.
+
 ## Calibration
 
 For each antenna:
@@ -117,7 +120,8 @@ value until changed.
 
 ## Safety Limits
 
-Each antenna has independent limits:
+Each antenna has independent limits. Press `Limits` in the GUI to edit and save
+these values without hand-editing `wt2.ini`:
 
 ```ini
 az_min = 270.000
@@ -132,6 +136,9 @@ poll_interval = 0.200
 
 The default is 60 seconds. If a button-release event is missed, WT_2 stops the
 axis when this time expires.
+
+The Limits dialog validates numeric ranges before saving. New limits take effect
+immediately for connected antennas and are written to `wt2.ini`.
 
 Azimuth supports wrap-around. For example:
 
