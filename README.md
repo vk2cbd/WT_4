@@ -182,6 +182,8 @@ WT_2 includes a first-pass Sun tracking mode:
 - AZ and EL are allowed to slew concurrently on each antenna.
 - Observer latitude/longitude are edited with `Observer`.
 - `Speed`, `Max jog`, `Interval`, `Tolerance`, `Slow speed`, and `Slow deg` are edited with `Tracking`.
+- The main screen shows one shared Sun AZ/EL target; the OLED displays use the
+  same shared target values.
 
 Sun tracking uses the same calibrated positions, software limits, margins, jog
 speed, max-jog watchdog, encoder polling, and stop commands as manual movement.
@@ -193,7 +195,9 @@ within `Slow deg` of the target, WT_2 changes that axis to `Slow speed` until it
 reaches the tracking tolerance.
 
 `Interval` is limited to 0.1..10.0 seconds in 0.1 second steps. `Tolerance` is
-limited to 0.01..0.20 degrees in 0.01 degree steps.
+limited to +/-0.01..0.20 degrees in 0.01 degree steps. A negative tolerance
+leads the Sun along its current motion direction by that amount and tracks to
+that led target with a 0.01 degree stopping tolerance.
 
 Use low speed for the first tests and confirm the displayed Sun AZ/EL is
 reasonable before allowing larger slews.

@@ -221,7 +221,15 @@ class WinTrakController:
         command = bytes([prefix, 0x35, column & 0xFF, row & 0xFF, len(payload) & 0xFF]) + payload
         self._send_ack(command)
 
-    def oled_status(self, label: str, position: Position, mode: str, fault: str = "") -> None:
+    def oled_status(
+        self,
+        label: str,
+        position: Position,
+        mode: str,
+        fault: str = "",
+        target_azimuth: Optional[float] = None,
+        target_elevation: Optional[float] = None,
+    ) -> None:
         state = fault[:7].upper() if fault else "SAFE"
         self.oled_write(0xF0, 0, 0, label.upper(), width=8)
         self.oled_write(0xF0, 10, 0, state, width=6)
@@ -230,16 +238,21 @@ class WinTrakController:
         self.oled_write(0xF0, 3, 1, f"{position.azimuth:6.2f}", width=6)
         self.oled_write(0xF1, 3, 2, f"{position.elevation:6.2f}", width=6)
         self.oled_write(0xF0, 0, 5, mode.upper(), width=8)
-        self.oled_write(0xF0, 0, 6, "RAWAZ", width=5)
-        self.oled_write(0xF1, 0, 7, "RAWEL", width=5)
-        self.oled_write(0xF0, 6, 6, f"{position.raw_azimuth:6.2f}", width=6)
-        self.oled_write(0xF1, 6, 7, f"{position.raw_elevation:6.2f}", width=6)
+        self.oled_write(0xF0, 0, 6, "AZ", width=2)
+        self.oled_write(0xF1, 0, 7, "EL", width=2)
+        self.oled_write(0xF0, 3, 6, f"{(target_azimuth if target_azimuth is not None else position.azimuth):6.2f}", width=6)
+        self.oled_write(0xF1, 3, 7, f"{(target_elevation if target_elevation is not None else position.elevation):6.2f}", width=6)
 
-    def oled_position(self, position: Position) -> None:
+    def oled_position(
+        self,
+        position: Position,
+        target_azimuth: Optional[float] = None,
+        target_elevation: Optional[float] = None,
+    ) -> None:
         self.oled_write(0xF0, 3, 1, f"{position.azimuth:6.2f}", width=6)
         self.oled_write(0xF1, 3, 2, f"{position.elevation:6.2f}", width=6)
-        self.oled_write(0xF0, 6, 6, f"{position.raw_azimuth:6.2f}", width=6)
-        self.oled_write(0xF1, 6, 7, f"{position.raw_elevation:6.2f}", width=6)
+        self.oled_write(0xF0, 3, 6, f"{(target_azimuth if target_azimuth is not None else position.azimuth):6.2f}", width=6)
+        self.oled_write(0xF1, 3, 7, f"{(target_elevation if target_elevation is not None else position.elevation):6.2f}", width=6)
 
     def _move(self, axis: Axis, channel: int, speed: int) -> None:
         mapping = AXIS_MAPS[axis]
@@ -387,7 +400,7 @@ class SafeAntenna:
         update_callback: Optional[Callable[[Position], None]] = None,
     ) -> Position:
         target_azimuth = normalize_degrees(target_azimuth)
-        tolerance = max(0.1, float(tolerance))
+        tolerance = max(0.01, abs(float(tolerance)))
         slow_threshold = max(tolerance, float(slow_threshold))
         fast_speed = clamp_speed(speed)
         slow_speed = clamp_speed(fast_speed if slow_speed is None else slow_speed)
@@ -457,15 +470,24 @@ class SafeAntenna:
         with self.lock:
             self.controller.stop_all()
 
-    def update_oled(self, mode: str = "MANUAL") -> None:
+    def update_oled(
+        self,
+        mode: str = "MANUAL",
+        target_azimuth: Optional[float] = None,
+        target_elevation: Optional[float] = None,
+    ) -> None:
         with self.lock:
             pos = self.last_position or self.read_position_locked()
-            self.controller.oled_status(self.config.name, pos, mode, self.fault)
+            self.controller.oled_status(self.config.name, pos, mode, self.fault, target_azimuth, target_elevation)
 
-    def update_oled_position(self) -> None:
+    def update_oled_position(
+        self,
+        target_azimuth: Optional[float] = None,
+        target_elevation: Optional[float] = None,
+    ) -> None:
         with self.lock:
             pos = self.last_position or self.read_position_locked()
-            self.controller.oled_position(pos)
+            self.controller.oled_position(pos, target_azimuth, target_elevation)
 
     def _start_direction(self, direction: Direction, speed: int) -> None:
         if direction == Direction.AZ_CW:

@@ -8,11 +8,12 @@ import queue
 import threading
 import time
 import tkinter as tk
+from datetime import datetime, timedelta, timezone
 from tkinter import messagebox, ttk
 from typing import Optional
 
 from wt2_config import SiteConfig, load_configs, load_site_config, save_configs, save_site_config
-from wt2_driver import AntennaConfig, Direction, Position, SafeAntenna
+from wt2_driver import AntennaConfig, Direction, Position, SafeAntenna, shortest_angle_delta
 from wt2_solar import SunPosition, sun_position
 
 
@@ -190,7 +191,7 @@ class TrackingDialog(tk.Toplevel):
         body = ttk.Frame(self, padding=10)
         body.grid(row=0, column=0, sticky="nsew")
         self._spin_field(body, "Interval sec", self.interval_var, 0, 0.1, 10.0, 0.1, width=7)
-        self._spin_field(body, "Tolerance deg", self.tolerance_var, 1, 0.01, 0.20, 0.01, width=7)
+        self._spin_field(body, "Tolerance deg", self.tolerance_var, 1, -0.20, 0.20, 0.01, width=7)
         self._field(body, "Slow speed", self.slow_speed_var, 2, width=7)
         self._field(body, "Slow deg", self.slow_threshold_var, 3, width=7)
 
@@ -526,8 +527,6 @@ class WT2App(tk.Tk):
         top.pack(fill="x")
         ttk.Button(top, text="Connect", command=self.connect_all).pack(side="left")
         ttk.Button(top, text="Disconnect", command=self.disconnect_all).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Refresh All", command=self.refresh_all).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="OLED All", command=self.oled_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Limits", command=self.open_limits).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Observer", command=self.open_observer).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Tracking", command=self.open_tracking).pack(side="left", padx=(6, 0))
@@ -641,13 +640,13 @@ class WT2App(tk.Tk):
     def sun_tracking_loop(self) -> None:
         try:
             while not self.tracking_stop_event.is_set():
-                target = self.current_sun_position()
+                target = self.current_tracking_target()
                 self.events.put(("ok", self.apply_sun_position, target))
                 self.slew_all_to_target(target, "SUN")
                 self.events.put(("ok", self.finish_sun_slew, target))
-                wait_until = time.monotonic() + max(2.0, self.site.track_interval_seconds)
+                wait_until = time.monotonic() + max(0.1, self.site.track_interval_seconds)
                 while not self.tracking_stop_event.is_set() and time.monotonic() < wait_until:
-                    time.sleep(0.2)
+                    time.sleep(0.05)
         except Exception as exc:
             self.events.put(("error", self.set_status, str(exc)))
         finally:
@@ -656,15 +655,34 @@ class WT2App(tk.Tk):
     def current_sun_position(self) -> SunPosition:
         return sun_position(self.site.latitude, self.site.longitude)
 
+    def current_tracking_target(self) -> SunPosition:
+        source = self.current_sun_position()
+        tolerance = self.site.track_tolerance_degrees
+        if tolerance >= 0:
+            return source
+
+        now = datetime.now(timezone.utc)
+        future = sun_position(self.site.latitude, self.site.longitude, now + timedelta(seconds=60))
+        lead = abs(tolerance)
+        az_delta = shortest_angle_delta(source.azimuth, future.azimuth)
+        el_delta = future.elevation - source.elevation
+        vector = (az_delta * az_delta + el_delta * el_delta) ** 0.5
+        if vector <= 0.0:
+            return source
+        return SunPosition(
+            azimuth=(source.azimuth + lead * az_delta / vector) % 360.0,
+            elevation=source.elevation + lead * el_delta / vector,
+        )
+
     def validate_site(self, site: SiteConfig) -> None:
         self.validate_observer(site)
         if not (0.1 <= site.track_interval_seconds <= 10.0):
             raise RuntimeError("Tracking interval must be 0.1..10.0 seconds.")
-        if not (0.01 <= site.track_tolerance_degrees <= 0.2):
-            raise RuntimeError("Tracking tolerance must be 0.01..0.20 degrees.")
+        if not (-0.2 <= site.track_tolerance_degrees <= 0.2) or site.track_tolerance_degrees == 0.0:
+            raise RuntimeError("Tracking tolerance must be -0.20..-0.01 or 0.01..0.20 degrees.")
         if not (0 <= site.slow_speed <= 100):
             raise RuntimeError("Slow speed must be 0..100.")
-        if not (site.track_tolerance_degrees <= site.slow_threshold_degrees <= 30.0):
+        if not (abs(site.track_tolerance_degrees) <= site.slow_threshold_degrees <= 30.0):
             raise RuntimeError("Slow deg must be at least tolerance and no more than 30 degrees.")
 
     def validate_observer(self, site: SiteConfig) -> None:
@@ -685,7 +703,7 @@ class WT2App(tk.Tk):
         def make_worker(name: str, session: SafeAntenna, panel: AntennaPanel):
             def progress(position: Position) -> None:
                 self.events.put(("position", panel.update_position, position))
-                session.update_oled_position()
+                session.update_oled_position(target.azimuth, target.elevation)
 
             def worker() -> None:
                 try:
@@ -694,12 +712,12 @@ class WT2App(tk.Tk):
                         target.elevation,
                         panel.speed_value,
                         self.tracking_stop_event,
-                        self.site.track_tolerance_degrees,
+                        self.tracking_stop_tolerance(),
                         self.site.slow_speed,
                         self.site.slow_threshold_degrees,
                         progress,
                     )
-                    session.update_oled(mode)
+                    session.update_oled(mode, target.azimuth, target.elevation)
                     self.events.put(("position", panel.update_position, position))
                 except Exception as exc:
                     with lock:
@@ -721,6 +739,11 @@ class WT2App(tk.Tk):
             self.tracking_stop_event.set()
             raise RuntimeError("; ".join(errors))
         return target
+
+    def tracking_stop_tolerance(self) -> float:
+        if self.site.track_tolerance_degrees < 0:
+            return 0.01
+        return abs(self.site.track_tolerance_degrees)
 
     def finish_sun_slew(self, target: SunPosition) -> None:
         self.apply_sun_position(target)
