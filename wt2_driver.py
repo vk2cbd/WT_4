@@ -114,6 +114,8 @@ class AntennaConfig:
     baud: int = 9600
     open_delay: float = 5.0
     gui_speed: int = 40
+    az_track_speed: int = 40
+    el_track_speed: int = 40
     calibration: Calibration = None
     limits: SafetyLimits = None
 
@@ -392,37 +394,53 @@ class SafeAntenna:
         self,
         target_azimuth: float,
         target_elevation: float,
-        speed: int,
+        az_speed: int,
+        el_speed: int,
         stop_event: threading.Event,
-        tolerance: float = 0.5,
-        slow_speed: Optional[int] = None,
-        slow_threshold: float = 3.0,
+        az_tolerance: float = 0.5,
+        el_tolerance: float = 0.5,
+        az_slow_speed: Optional[int] = None,
+        el_slow_speed: Optional[int] = None,
+        az_slow_threshold: float = 3.0,
+        el_slow_threshold: float = 3.0,
         update_callback: Optional[Callable[[Position], None]] = None,
     ) -> Position:
         target_azimuth = normalize_degrees(target_azimuth)
-        tolerance = max(0.01, abs(float(tolerance)))
-        slow_threshold = max(tolerance, float(slow_threshold))
-        fast_speed = clamp_speed(speed)
-        slow_speed = clamp_speed(fast_speed if slow_speed is None else slow_speed)
+        az_tolerance = max(0.01, abs(float(az_tolerance)))
+        el_tolerance = max(0.01, abs(float(el_tolerance)))
+        az_slow_threshold = max(az_tolerance, float(az_slow_threshold))
+        el_slow_threshold = max(el_tolerance, float(el_slow_threshold))
+        az_fast_speed = clamp_speed(az_speed)
+        el_fast_speed = clamp_speed(el_speed)
+        az_slow_speed = clamp_speed(az_fast_speed if az_slow_speed is None else az_slow_speed)
+        el_slow_speed = clamp_speed(el_fast_speed if el_slow_speed is None else el_slow_speed)
         self.config.limits.assert_position_allowed(target_azimuth, target_elevation)
 
         pos = self.read_position()
         az_error = shortest_angle_delta(pos.azimuth, target_azimuth)
         el_error = target_elevation - pos.elevation
         active: dict[Axis, dict[str, object]] = {}
-        if abs(az_error) > tolerance:
+        if abs(az_error) > az_tolerance:
             active[Axis.AZIMUTH] = {
                 "direction": Direction.AZ_CW if az_error > 0 else Direction.AZ_CCW,
                 "target": target_azimuth,
                 "previous_error": az_error,
-                "slow": abs(az_error) <= slow_threshold,
+                "tolerance": az_tolerance,
+                "fast_speed": az_fast_speed,
+                "slow_speed": az_slow_speed,
+                "slow_threshold": az_slow_threshold,
+                "slow": abs(az_error) <= az_slow_threshold,
             }
-        if abs(el_error) > tolerance:
+        if abs(el_error) > el_tolerance:
             active[Axis.ELEVATION] = {
                 "direction": Direction.EL_UP if el_error > 0 else Direction.EL_DOWN,
                 "target": target_elevation,
                 "previous_error": el_error,
-                "slow": abs(el_error) <= slow_threshold,
+                "tolerance": el_tolerance,
+                "fast_speed": el_fast_speed,
+                "slow_speed": el_slow_speed,
+                "slow_threshold": el_slow_threshold,
+                "slow": abs(el_error) <= el_slow_threshold,
             }
         if not active:
             return pos
@@ -434,7 +452,7 @@ class SafeAntenna:
                 for state in active.values():
                     direction = state["direction"]
                     self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
-                    start_speed = slow_speed if state["slow"] else fast_speed
+                    start_speed = state["slow_speed"] if state["slow"] else state["fast_speed"]
                     self._start_direction(direction, start_speed)
 
             while active and not stop_event.is_set() and time.monotonic() < deadline:
@@ -445,6 +463,9 @@ class SafeAntenna:
                         direction = state["direction"]
                         self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
                         target = state["target"]
+                        tolerance = state["tolerance"]
+                        slow_threshold = state["slow_threshold"]
+                        slow_speed = state["slow_speed"]
                         error = shortest_angle_delta(pos.azimuth, target) if axis == Axis.AZIMUTH else target - pos.elevation
                         previous_error = state["previous_error"]
                         if abs(error) <= tolerance or _crossed_target(previous_error, error):

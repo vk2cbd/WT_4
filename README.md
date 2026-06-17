@@ -48,9 +48,12 @@ The observer site and tracking settings are edited from the `Observer` and
 latitude = -32.724000
 longitude = 152.130167
 track_interval_seconds = 2.0
-track_tolerance_degrees = 0.10
-slow_speed = 20
-slow_threshold_degrees = 3.0
+az_track_tolerance_degrees = 0.10
+el_track_tolerance_degrees = 0.10
+az_slow_speed = 20
+el_slow_speed = 20
+az_slow_threshold_degrees = 3.0
+el_slow_threshold_degrees = 3.0
 ```
 
 Use stable device paths if available:
@@ -181,7 +184,7 @@ WT_2 includes a first-pass Sun tracking mode:
 - `Stop Track` stops tracking and sends stop commands.
 - AZ and EL are allowed to slew concurrently on each antenna.
 - Observer latitude/longitude are edited with `Observer`.
-- `Speed`, `Max jog`, `Interval`, `Tolerance`, `Slow speed`, and `Slow deg` are edited with `Tracking`.
+- `Interval`, AZ/EL tolerance, AZ/EL slow speed, AZ/EL slow deg, AZ/EL tracking speed, and `Max jog` are edited with `Tracking`.
 - The main screen shows one shared Sun AZ/EL target; the OLED displays use the
   same shared target values.
 
@@ -190,17 +193,35 @@ speed, max-jog watchdog, encoder polling, and stop commands as manual movement.
 If the Sun target is outside the configured safe limits, WT_2 stops instead of
 moving.
 
-Each antenna uses its own `Speed` value as the normal slew rate. When an axis is
-within `Slow deg` of the target, WT_2 changes that axis to `Slow speed` until it
-reaches the tracking tolerance.
+Each antenna has separate AZ and EL tracking speeds:
 
-Fine tracking moves that start already inside `Slow deg` begin at `Slow speed`.
-The Tracking dialog requires `Slow speed` to be lower than each antenna `Speed`.
+```ini
+az_track_speed = 40
+el_track_speed = 40
+```
 
-`Interval` is limited to 0.1..10.0 seconds in 0.1 second steps. `Tolerance` is
-limited to +/-0.01..0.20 degrees in 0.01 degree steps. A negative tolerance
-leads the Sun along its current motion direction by that amount and tracks to
-that led target with a 0.01 degree stopping tolerance.
+Each axis also has its own tracking tolerance and slow-rate settings:
+
+```ini
+az_track_tolerance_degrees = 0.10
+el_track_tolerance_degrees = 0.10
+az_slow_speed = 20
+el_slow_speed = 20
+az_slow_threshold_degrees = 3.0
+el_slow_threshold_degrees = 3.0
+```
+
+When an axis is within its slow-degree value, WT_2 changes that axis to its slow
+speed until it reaches that axis' tracking tolerance.
+
+Fine tracking moves that start already inside the slow-degree range begin at the
+axis slow speed. The Tracking dialog requires each axis slow speed to be lower
+than the matching antenna tracking speed.
+
+`Interval` is limited to 0.1..10.0 seconds in 0.1 second steps. Each axis
+tolerance is limited to +/-0.01..0.20 degrees in 0.01 degree steps. A negative
+axis tolerance leads the Sun on that axis by that amount and tracks to that led
+target with a 0.01 degree stopping tolerance.
 
 Use low speed for the first tests and confirm the displayed Sun AZ/EL is
 reasonable before allowing larger slews.

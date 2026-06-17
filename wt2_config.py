@@ -16,9 +16,12 @@ class SiteConfig:
     latitude: float = -32.724000
     longitude: float = 152.130167
     track_interval_seconds: float = 2.0
-    track_tolerance_degrees: float = 0.10
-    slow_speed: int = 20
-    slow_threshold_degrees: float = 3.0
+    az_track_tolerance_degrees: float = 0.10
+    el_track_tolerance_degrees: float = 0.10
+    az_slow_speed: int = 20
+    el_slow_speed: int = 20
+    az_slow_threshold_degrees: float = 3.0
+    el_slow_threshold_degrees: float = 3.0
 
 
 def load_site_config(path: Union[str, Path]) -> SiteConfig:
@@ -26,13 +29,19 @@ def load_site_config(path: Union[str, Path]) -> SiteConfig:
     parser = configparser.ConfigParser()
     if path.exists():
         parser.read(path)
+    old_tolerance = parser.getfloat("site", "track_tolerance_degrees", fallback=0.10)
+    old_slow_speed = parser.getint("site", "slow_speed", fallback=20)
+    old_slow_threshold = parser.getfloat("site", "slow_threshold_degrees", fallback=3.0)
     return SiteConfig(
         latitude=parser.getfloat("site", "latitude", fallback=-32.724000),
         longitude=parser.getfloat("site", "longitude", fallback=152.130167),
         track_interval_seconds=parser.getfloat("site", "track_interval_seconds", fallback=2.0),
-        track_tolerance_degrees=parser.getfloat("site", "track_tolerance_degrees", fallback=0.10),
-        slow_speed=parser.getint("site", "slow_speed", fallback=20),
-        slow_threshold_degrees=parser.getfloat("site", "slow_threshold_degrees", fallback=3.0),
+        az_track_tolerance_degrees=parser.getfloat("site", "az_track_tolerance_degrees", fallback=old_tolerance),
+        el_track_tolerance_degrees=parser.getfloat("site", "el_track_tolerance_degrees", fallback=old_tolerance),
+        az_slow_speed=parser.getint("site", "az_slow_speed", fallback=old_slow_speed),
+        el_slow_speed=parser.getint("site", "el_slow_speed", fallback=old_slow_speed),
+        az_slow_threshold_degrees=parser.getfloat("site", "az_slow_threshold_degrees", fallback=old_slow_threshold),
+        el_slow_threshold_degrees=parser.getfloat("site", "el_slow_threshold_degrees", fallback=old_slow_threshold),
     )
 
 
@@ -67,6 +76,8 @@ def load_configs(path: Union[str, Path]) -> dict[str, AntennaConfig]:
             baud=parser.getint(section, "baud", fallback=9600),
             open_delay=parser.getfloat(section, "open_delay", fallback=5.0),
             gui_speed=parser.getint(section, "gui_speed", fallback=40),
+            az_track_speed=parser.getint(section, "az_track_speed", fallback=parser.getint(section, "gui_speed", fallback=40)),
+            el_track_speed=parser.getint(section, "el_track_speed", fallback=parser.getint(section, "gui_speed", fallback=40)),
             calibration=Calibration(
                 az_offset=parser.getfloat(section, "az_offset", fallback=0.0),
                 el_offset=parser.getfloat(section, "el_offset", fallback=0.0),
@@ -102,6 +113,8 @@ def save_configs(path: Union[str, Path], configs: dict[str, AntennaConfig]) -> N
             "baud": str(config.baud),
             "open_delay": f"{config.open_delay:g}",
             "gui_speed": str(config.gui_speed),
+            "az_track_speed": str(config.az_track_speed),
+            "el_track_speed": str(config.el_track_speed),
             "az_offset": f"{config.calibration.az_offset:.6f}",
             "el_offset": f"{config.calibration.el_offset:.6f}",
             "az_min": f"{config.limits.az_min:.3f}",
@@ -122,7 +135,10 @@ def _site_section(site: SiteConfig) -> dict[str, str]:
         "latitude": f"{site.latitude:.6f}",
         "longitude": f"{site.longitude:.6f}",
         "track_interval_seconds": f"{site.track_interval_seconds:.1f}",
-        "track_tolerance_degrees": f"{site.track_tolerance_degrees:.2f}",
-        "slow_speed": str(max(0, min(100, int(site.slow_speed)))),
-        "slow_threshold_degrees": f"{site.slow_threshold_degrees:.1f}",
+        "az_track_tolerance_degrees": f"{site.az_track_tolerance_degrees:.2f}",
+        "el_track_tolerance_degrees": f"{site.el_track_tolerance_degrees:.2f}",
+        "az_slow_speed": str(max(0, min(100, int(site.az_slow_speed)))),
+        "el_slow_speed": str(max(0, min(100, int(site.el_slow_speed)))),
+        "az_slow_threshold_degrees": f"{site.az_slow_threshold_degrees:.1f}",
+        "el_slow_threshold_degrees": f"{site.el_slow_threshold_degrees:.1f}",
     }
