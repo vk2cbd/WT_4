@@ -16,7 +16,7 @@ el_min = 0.000
 el_max = 87.000
 az_margin = 0.500
 el_margin = 0.500
-max_jog_seconds = 5.000
+max_jog_seconds = 60.000
 poll_interval = 0.200
 
 [antenna:West]
@@ -32,5 +32,5 @@ el_min = 0.000
 el_max = 87.000
 az_margin = 0.500
 el_margin = 0.500
-max_jog_seconds = 5.000
+max_jog_seconds = 60.000
 poll_interval = 0.200

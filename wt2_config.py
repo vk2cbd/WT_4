@@ -42,7 +42,7 @@ def load_configs(path: Union[str, Path]) -> dict[str, AntennaConfig]:
                 el_max=parser.getfloat(section, "el_max", fallback=87.0),
                 az_margin=parser.getfloat(section, "az_margin", fallback=0.5),
                 el_margin=parser.getfloat(section, "el_margin", fallback=0.5),
-                max_jog_seconds=parser.getfloat(section, "max_jog_seconds", fallback=5.0),
+                max_jog_seconds=parser.getfloat(section, "max_jog_seconds", fallback=60.0),
                 poll_interval=parser.getfloat(section, "poll_interval", fallback=0.2),
             ),
         )

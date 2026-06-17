@@ -68,7 +68,7 @@ class SafetyLimits:
     el_max: float = 87.0
     az_margin: float = 0.5
     el_margin: float = 0.5
-    max_jog_seconds: float = 5.0
+    max_jog_seconds: float = 60.0
     poll_interval: float = 0.2
 
     def is_az_allowed(self, azimuth: float) -> bool:
@@ -235,6 +235,12 @@ class WinTrakController:
         self.oled_write(0xF0, 6, 6, f"{position.raw_azimuth:6.2f}", width=6)
         self.oled_write(0xF1, 6, 7, f"{position.raw_elevation:6.2f}", width=6)
 
+    def oled_position(self, position: Position) -> None:
+        self.oled_write(0xF0, 3, 1, f"{position.azimuth:6.2f}", width=6)
+        self.oled_write(0xF1, 3, 2, f"{position.elevation:6.2f}", width=6)
+        self.oled_write(0xF0, 6, 6, f"{position.raw_azimuth:6.2f}", width=6)
+        self.oled_write(0xF1, 6, 7, f"{position.raw_elevation:6.2f}", width=6)
+
     def _move(self, axis: Axis, channel: int, speed: int) -> None:
         mapping = AXIS_MAPS[axis]
         self._set_speed(axis, mapping.positive_channel, 0)
@@ -343,7 +349,6 @@ class SafeAntenna:
         if seconds is not None:
             seconds = min(max(0.0, seconds), self.config.limits.max_jog_seconds)
             deadline = time.monotonic() + seconds
-        start = time.monotonic()
         axis = Axis.AZIMUTH if direction in (Direction.AZ_CW, Direction.AZ_CCW) else Axis.ELEVATION
         try:
             with self.lock:
@@ -378,6 +383,11 @@ class SafeAntenna:
         with self.lock:
             pos = self.last_position or self.read_position_locked()
             self.controller.oled_status(self.config.name, pos, mode, self.fault)
+
+    def update_oled_position(self) -> None:
+        with self.lock:
+            pos = self.last_position or self.read_position_locked()
+            self.controller.oled_position(pos)
 
     def _start_direction(self, direction: Direction, speed: int) -> None:
         if direction == Direction.AZ_CW:

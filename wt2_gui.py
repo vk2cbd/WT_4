@@ -92,6 +92,13 @@ class AntennaPanel(ttk.Frame):
         self.status_var.set("CONNECTED")
         self.update_position(session.last_position)
 
+    def detach(self) -> None:
+        self.stop_event.set()
+        self.session = None
+        self.jog_thread_active = False
+        self.status_var.set("DISCONNECTED")
+        self.fault_var.set("")
+
     def update_position(self, position: Optional[Position]) -> None:
         if position is None:
             return
@@ -146,14 +153,19 @@ class AntennaPanel(ttk.Frame):
     def start_jog(self, direction: Direction) -> None:
         if not self.session or self.jog_thread_active:
             return
+        session = self.session
         self.stop_event.clear()
         speed = self.speed_value
         self.jog_thread_active = True
 
+        def realtime_update(position: Position) -> None:
+            self.queue_position_update(position)
+            session.update_oled_position()
+
         def work() -> Position:
-            self.session.guarded_jog(direction, speed, None, self.stop_event, self.queue_position_update)
-            position = self.session.read_position()
-            self.session.update_oled("MANUAL")
+            session.guarded_jog(direction, speed, None, self.stop_event, realtime_update)
+            position = session.read_position()
+            session.update_oled("MANUAL")
             return position
 
         self.app.run_worker(work, self.finish_jog, self.finish_jog_fault)
@@ -191,6 +203,7 @@ class WT2App(tk.Tk):
         top = ttk.Frame(self, padding=8)
         top.pack(fill="x")
         ttk.Button(top, text="Connect", command=self.connect_all).pack(side="left")
+        ttk.Button(top, text="Disconnect", command=self.disconnect_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Refresh All", command=self.refresh_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="OLED All", command=self.oled_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="STOP ALL", command=self.stop_all).pack(side="right")
@@ -237,6 +250,31 @@ class WT2App(tk.Tk):
         connected = len(self.sessions)
         total = len(self.configs)
         self.status_var.set(f"Connected {connected}/{total} antennas. Guarded manual mode ready.")
+
+    def disconnect_all(self) -> None:
+        if not self.sessions:
+            self.status_var.set("Already disconnected.")
+            return
+        for panel in self.panels.values():
+            panel.stop_event.set()
+        for name, session in list(self.sessions.items()):
+            self.run_worker(
+                lambda s=session: s.close(),
+                lambda _result, n=name: self.detach_session(n),
+                self.set_status,
+            )
+        self.status_var.set("Disconnecting...")
+
+    def detach_session(self, name: str) -> None:
+        self.sessions.pop(name, None)
+        if name in self.panels:
+            self.panels[name].detach()
+        connected = len(self.sessions)
+        total = len(self.configs)
+        if connected:
+            self.status_var.set(f"Connected {connected}/{total} antennas. Guarded manual mode ready.")
+        else:
+            self.status_var.set("Disconnected.")
 
     def refresh_all(self) -> None:
         for panel in self.panels.values():

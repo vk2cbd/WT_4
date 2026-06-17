@@ -11,7 +11,9 @@ before automatic tracking is safe:
 - calibrated and raw position display
 - software azimuth/elevation limits
 - guarded jogs that poll during movement
+- live GUI and OLED position updates during held jogs
 - stop per antenna and stop all
+- disconnect/reconnect from the serial controllers
 - front-panel OLED updates with safety state instead of frequency
 
 ## Install
@@ -64,6 +66,7 @@ python3 wt2_gui.py --config wt2.ini
 4. Confirm raw and calibrated positions display for both antennas.
 5. Confirm each controller OLED has populated with the current safety/status display.
 6. Use guarded press-and-hold jogs only after confirming the displayed positions are sensible.
+7. Press `Disconnect` before unplugging or changing controller wiring.
 
 ## Calibration
 
@@ -89,6 +92,7 @@ Jog buttons are press-and-hold:
 
 - movement starts when the button is pressed
 - calibrated AZ/EL updates while the antenna is moving
+- each controller OLED updates AZ/EL while the antenna is moving
 - movement stops when the button is released
 - movement also stops on any limit, encoder, serial, or watchdog fault
 
@@ -112,9 +116,12 @@ el_min = 0.000
 el_max = 87.000
 az_margin = 0.500
 el_margin = 0.500
-max_jog_seconds = 5.000
+max_jog_seconds = 60.000
 poll_interval = 0.200
 ```
+
+`max_jog_seconds` is a held-button watchdog. The default is 60 seconds; if a
+button-release event is missed, WT_2 stops the axis when this time expires.
 
 Azimuth supports wrap-around. For example:
 
