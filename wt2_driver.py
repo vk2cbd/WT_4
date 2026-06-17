@@ -479,6 +479,12 @@ class SafeAntenna:
         else:
             raise ValueError(f"Unsupported direction: {direction}")
 
+    def _stop_axis(self, axis: Axis) -> None:
+        if axis == Axis.AZIMUTH:
+            self.controller.stop_azimuth()
+        else:
+            self.controller.stop_elevation()
+
     def _set_axis_direction_speed(self, axis: Axis, direction: Direction, speed: int) -> None:
         if axis == Axis.AZIMUTH:
             channel = AXIS_MAPS[axis].positive_channel if direction == Direction.AZ_CW else AXIS_MAPS[axis].negative_channel
