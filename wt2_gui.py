@@ -33,8 +33,11 @@ class AntennaPanel(ttk.Frame):
         self.actual_el_var = tk.StringVar()
 
         initial_speed = config.gui_speed if config else 40
+        initial_max_jog = config.limits.max_jog_seconds if config else 60.0
         self.speed_value = initial_speed
+        self.max_jog_value = initial_max_jog
         self.speed_var = tk.StringVar(value=str(initial_speed))
+        self.max_jog_var = tk.StringVar(value=f"{initial_max_jog:0.1f}")
         self.jog_thread_active = False
 
         self.columnconfigure(1, weight=1)
@@ -47,9 +50,9 @@ class AntennaPanel(ttk.Frame):
         self._label_pair(4, "Cal EL", self.cal_el_var)
 
         ttk.Label(self, text="Actual AZ").grid(row=5, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(self, textvariable=self.actual_az_var, width=10).grid(row=5, column=1, sticky="ew", pady=(8, 0))
+        ttk.Entry(self, textvariable=self.actual_az_var, width=6).grid(row=5, column=1, sticky="w", pady=(8, 0))
         ttk.Label(self, text="Actual EL").grid(row=6, column=0, sticky="w")
-        ttk.Entry(self, textvariable=self.actual_el_var, width=10).grid(row=6, column=1, sticky="ew")
+        ttk.Entry(self, textvariable=self.actual_el_var, width=6).grid(row=6, column=1, sticky="w")
         ttk.Button(self, text="Calibrate", command=self.calibrate).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 8))
 
         control = ttk.Frame(self)
@@ -67,7 +70,11 @@ class AntennaPanel(ttk.Frame):
         speed_entry = ttk.Entry(settings, textvariable=self.speed_var, width=5)
         speed_entry.grid(row=0, column=1, sticky="w")
         speed_entry.bind("<Return>", self.commit_speed)
-        ttk.Label(settings, text="press Enter to commit").grid(row=0, column=2, sticky="w", padx=(8, 0))
+        ttk.Label(settings, text="Max jog").grid(row=0, column=2, sticky="w", padx=(8, 0))
+        max_jog_entry = ttk.Entry(settings, textvariable=self.max_jog_var, width=5)
+        max_jog_entry.grid(row=0, column=3, sticky="w")
+        max_jog_entry.bind("<Return>", self.commit_max_jog)
+        ttk.Label(settings, text="Enter commits").grid(row=0, column=4, sticky="w", padx=(8, 0))
 
         ttk.Button(self, text="STOP", command=self.stop).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(self, textvariable=self.fault_var, foreground="red", wraplength=260).grid(
@@ -88,8 +95,11 @@ class AntennaPanel(ttk.Frame):
     def attach(self, session: SafeAntenna) -> None:
         self.session = session
         self.speed_value = session.config.gui_speed
+        self.max_jog_value = session.config.limits.max_jog_seconds
         self.speed_var.set(str(self.speed_value))
+        self.max_jog_var.set(f"{self.max_jog_value:0.1f}")
         self.status_var.set("CONNECTED")
+        self.fault_var.set("")
         self.update_position(session.last_position)
 
     def detach(self) -> None:
@@ -111,10 +121,20 @@ class AntennaPanel(ttk.Frame):
         self.fault_var.set(text)
         self.status_var.set("FAULT" if text else "CONNECTED")
 
+    def set_message(self, text: str) -> None:
+        self.fault_var.set(text)
+        if self.session:
+            self.status_var.set("CONNECTED")
+
+    def clear_message(self) -> None:
+        self.fault_var.set("")
+        if self.session:
+            self.status_var.set("CONNECTED")
+
     def refresh(self) -> None:
         if not self.session:
             return
-        self.app.run_worker(lambda: self.session.read_position(), self.update_position, self.set_fault)
+        self.app.run_worker(lambda: self.session.read_position(), self.finish_refresh, self.set_message)
 
     def calibrate(self) -> None:
         if not self.session:
@@ -123,7 +143,10 @@ class AntennaPanel(ttk.Frame):
             actual_az = float(self.actual_az_var.get())
             actual_el = float(self.actual_el_var.get())
         except ValueError:
-            self.set_fault("Calibration requires numeric actual AZ and EL.")
+            self.set_message("Calibration requires numeric actual AZ and EL.")
+            return
+        if not (0.0 <= actual_az <= 360.0 and -90.0 <= actual_el <= 180.0):
+            self.set_message("Calibration AZ must be 0..360 and EL -90..180.")
             return
 
         def work() -> Position:
@@ -132,14 +155,14 @@ class AntennaPanel(ttk.Frame):
             self.session.update_oled("CAL")
             return position
 
-        self.app.run_worker(work, self.update_position, self.set_fault)
+        self.app.run_worker(work, self.finish_calibration, self.set_message)
 
     def commit_speed(self, _event: Optional[object] = None) -> bool:
         try:
             value = max(0, min(100, int(self.speed_var.get())))
         except ValueError:
             self.speed_var.set(str(self.speed_value))
-            self.set_fault("Speed must be a whole number from 0 to 100.")
+            self.set_message("Speed must be a whole number from 0 to 100.")
             return False
         self.speed_value = value
         self.speed_var.set(str(value))
@@ -147,7 +170,23 @@ class AntennaPanel(ttk.Frame):
         if config:
             config.gui_speed = value
             self.app.save_config("Settings saved.")
-        self.set_fault("")
+        self.clear_message()
+        return True
+
+    def commit_max_jog(self, _event: Optional[object] = None) -> bool:
+        try:
+            value = max(1.0, min(600.0, float(self.max_jog_var.get())))
+        except ValueError:
+            self.max_jog_var.set(f"{self.max_jog_value:0.1f}")
+            self.set_message("Max jog must be a number from 1 to 600 seconds.")
+            return False
+        self.max_jog_value = value
+        self.max_jog_var.set(f"{value:0.1f}")
+        config = self.session.config if self.session else self.config
+        if config:
+            config.limits.max_jog_seconds = value
+            self.app.save_config("Settings saved.")
+        self.clear_message()
         return True
 
     def start_jog(self, direction: Direction) -> None:
@@ -173,13 +212,24 @@ class AntennaPanel(ttk.Frame):
     def queue_position_update(self, position: Position) -> None:
         self.app.events.put(("position", self.update_position, position))
 
+    def finish_refresh(self, position: Position) -> None:
+        self.clear_message()
+        self.update_position(position)
+
+    def finish_calibration(self, position: Position) -> None:
+        self.actual_az_var.set(f"{position.azimuth:0.2f}")
+        self.actual_el_var.set(f"{position.elevation:0.2f}")
+        self.clear_message()
+        self.update_position(position)
+
     def finish_jog(self, position: Position) -> None:
         self.jog_thread_active = False
+        self.clear_message()
         self.update_position(position)
 
     def finish_jog_fault(self, text: str) -> None:
         self.jog_thread_active = False
-        self.set_fault(text)
+        self.set_message(text)
 
     def stop(self) -> None:
         self.stop_event.set()

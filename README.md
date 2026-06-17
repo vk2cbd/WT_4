@@ -105,6 +105,16 @@ gui_speed = 40
 Changing the speed text does not affect movement until `Enter`/`Return` is
 pressed in the speed field. This prevents half-entered values becoming active.
 
+The `Max jog` field is also persistent per antenna:
+
+```ini
+max_jog_seconds = 60.000
+```
+
+It is a held-button watchdog. Change it in the GUI and press `Enter`/`Return`
+to save it. Existing `wt2.ini` files that still contain `5.000` will keep that
+value until changed.
+
 ## Safety Limits
 
 Each antenna has independent limits:
@@ -120,8 +130,8 @@ max_jog_seconds = 60.000
 poll_interval = 0.200
 ```
 
-`max_jog_seconds` is a held-button watchdog. The default is 60 seconds; if a
-button-release event is missed, WT_2 stops the axis when this time expires.
+The default is 60 seconds. If a button-release event is missed, WT_2 stops the
+axis when this time expires.
 
 Azimuth supports wrap-around. For example:
 
