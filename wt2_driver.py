@@ -375,6 +375,74 @@ class SafeAntenna:
                 else:
                     self.controller.stop_elevation()
 
+    def guarded_slew_to(
+        self,
+        target_azimuth: float,
+        target_elevation: float,
+        speed: int,
+        stop_event: threading.Event,
+        tolerance: float = 0.5,
+        update_callback: Optional[Callable[[Position], None]] = None,
+    ) -> Position:
+        target_azimuth = normalize_degrees(target_azimuth)
+        tolerance = max(0.1, float(tolerance))
+        self.config.limits.assert_position_allowed(target_azimuth, target_elevation)
+
+        pos = self.read_position()
+        if abs(shortest_angle_delta(pos.azimuth, target_azimuth)) > tolerance:
+            direction = Direction.AZ_CW if shortest_angle_delta(pos.azimuth, target_azimuth) > 0 else Direction.AZ_CCW
+            pos = self._guarded_slew_axis(Axis.AZIMUTH, direction, target_azimuth, speed, stop_event, tolerance, update_callback)
+        if stop_event.is_set():
+            return pos
+        if abs(target_elevation - pos.elevation) > tolerance:
+            direction = Direction.EL_UP if target_elevation > pos.elevation else Direction.EL_DOWN
+            pos = self._guarded_slew_axis(Axis.ELEVATION, direction, target_elevation, speed, stop_event, tolerance, update_callback)
+        return pos
+
+    def _guarded_slew_axis(
+        self,
+        axis: Axis,
+        direction: Direction,
+        target: float,
+        speed: int,
+        stop_event: threading.Event,
+        tolerance: float,
+        update_callback: Optional[Callable[[Position], None]],
+    ) -> Position:
+        deadline = time.monotonic() + self.config.limits.max_jog_seconds
+        previous_error: Optional[float] = None
+        try:
+            with self.lock:
+                pos = self.read_position_locked()
+                self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                self._start_direction(direction, speed)
+
+            while not stop_event.is_set() and time.monotonic() < deadline:
+                time.sleep(self.config.limits.poll_interval)
+                with self.lock:
+                    pos = self.read_position_locked()
+                    self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                error = shortest_angle_delta(pos.azimuth, target) if axis == Axis.AZIMUTH else target - pos.elevation
+                if update_callback:
+                    update_callback(pos)
+                if abs(error) <= tolerance:
+                    return pos
+                if previous_error is not None and _crossed_target(previous_error, error):
+                    return pos
+                previous_error = error
+            if not stop_event.is_set():
+                raise SafetyError(f"Slew timed out after {self.config.limits.max_jog_seconds:0.1f}s")
+            return self.read_position()
+        except Exception as exc:
+            self.fault = str(exc)
+            raise
+        finally:
+            with self.lock:
+                if axis == Axis.AZIMUTH:
+                    self.controller.stop_azimuth()
+                else:
+                    self.controller.stop_elevation()
+
     def stop_all(self) -> None:
         with self.lock:
             self.controller.stop_all()
@@ -411,6 +479,10 @@ def normalize_degrees(value: float) -> float:
 
 def shortest_angle_delta(raw: float, actual: float) -> float:
     return ((normalize_degrees(actual) - normalize_degrees(raw) + 540.0) % 360.0) - 180.0
+
+
+def _crossed_target(previous_error: float, current_error: float) -> bool:
+    return (previous_error < 0.0 < current_error) or (previous_error > 0.0 > current_error)
 
 
 def clamp_speed(speed: int) -> int:

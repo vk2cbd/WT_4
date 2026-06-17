@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import queue
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Optional
 
-from wt2_config import load_configs, save_configs
+from wt2_config import load_configs, load_site_config, save_configs
 from wt2_driver import AntennaConfig, Direction, Position, SafeAntenna
+from wt2_solar import SunPosition, sun_position
 
 
 class LimitsDialog(tk.Toplevel):
@@ -366,11 +368,17 @@ class WT2App(tk.Tk):
     def __init__(self, config_path: str) -> None:
         super().__init__()
         self.title("WT_2 Antenna Controller")
-        self.geometry("760x520")
+        self.geometry("980x560")
         self.config_path = config_path
         self.configs = load_configs(config_path)
+        self.site = load_site_config(config_path)
         self.sessions: dict[str, SafeAntenna] = {}
         self.events: queue.Queue[tuple[str, object, object]] = queue.Queue()
+        self.tracking_stop_event = threading.Event()
+        self.tracking_active = False
+        self.sun_slew_active = False
+        self.sun_az_var = tk.StringVar(value="Sun AZ --")
+        self.sun_el_var = tk.StringVar(value="Sun EL --")
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -382,9 +390,16 @@ class WT2App(tk.Tk):
         ttk.Button(top, text="Refresh All", command=self.refresh_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="OLED All", command=self.oled_all).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Limits", command=self.open_limits).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Sun Once", command=self.sun_once).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Track Sun", command=self.start_sun_tracking).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Stop Track", command=self.stop_sun_tracking).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="STOP ALL", command=self.stop_all).pack(side="right")
 
         ttk.Label(self, textvariable=self.status_var, padding=(8, 2)).pack(fill="x")
+        target_bar = ttk.Frame(self, padding=(8, 0, 8, 2))
+        target_bar.pack(fill="x")
+        ttk.Label(target_bar, textvariable=self.sun_az_var).pack(side="left")
+        ttk.Label(target_bar, textvariable=self.sun_el_var).pack(side="left", padx=(16, 0))
 
         body = ttk.Frame(self, padding=8)
         body.pack(fill="both", expand=True)
@@ -460,6 +475,122 @@ class WT2App(tk.Tk):
         for session in self.sessions.values():
             self.run_worker(lambda s=session: s.update_oled("MANUAL"), lambda _result: None, self.set_status)
 
+    def sun_once(self) -> None:
+        if self.tracking_active or self.sun_slew_active:
+            self.status_var.set("Sun slew or tracking already active.")
+            return
+        if not self.sessions:
+            self.status_var.set("Connect antennas before Sun slew.")
+            return
+        self.tracking_stop_event.clear()
+        self.sun_slew_active = True
+        target = self.current_sun_position()
+        self.apply_sun_position(target)
+        self.run_worker(
+            lambda: self.slew_all_to_target(target, "SUN"),
+            self.finish_sun_once,
+            self.fail_sun_once,
+        )
+
+    def start_sun_tracking(self) -> None:
+        if self.sun_slew_active:
+            self.status_var.set("Wait for Sun Once to finish before starting tracking.")
+            return
+        if self.tracking_active:
+            self.status_var.set("Sun tracking already active.")
+            return
+        if not self.sessions:
+            self.status_var.set("Connect antennas before Sun tracking.")
+            return
+        self.tracking_stop_event.clear()
+        self.tracking_active = True
+        self.status_var.set("Sun tracking started.")
+        threading.Thread(target=self.sun_tracking_loop, daemon=True).start()
+
+    def stop_sun_tracking(self) -> None:
+        self.tracking_stop_event.set()
+        self.tracking_active = False
+        self.stop_all()
+        self.status_var.set("Sun tracking stopped.")
+
+    def sun_tracking_loop(self) -> None:
+        try:
+            while not self.tracking_stop_event.is_set():
+                target = self.current_sun_position()
+                self.events.put(("ok", self.apply_sun_position, target))
+                self.slew_all_to_target(target, "SUN")
+                self.events.put(("ok", self.finish_sun_slew, target))
+                wait_until = time.monotonic() + max(2.0, self.site.track_interval_seconds)
+                while not self.tracking_stop_event.is_set() and time.monotonic() < wait_until:
+                    time.sleep(0.2)
+        except Exception as exc:
+            self.events.put(("error", self.set_status, str(exc)))
+        finally:
+            self.tracking_active = False
+
+    def current_sun_position(self) -> SunPosition:
+        return sun_position(self.site.latitude, self.site.longitude)
+
+    def apply_sun_position(self, target: SunPosition) -> None:
+        self.sun_az_var.set(f"Sun AZ {target.azimuth:0.2f}")
+        self.sun_el_var.set(f"Sun EL {target.elevation:0.2f}")
+
+    def slew_all_to_target(self, target: SunPosition, mode: str) -> SunPosition:
+        errors: list[str] = []
+        threads: list[threading.Thread] = []
+        lock = threading.Lock()
+
+        def make_worker(name: str, session: SafeAntenna, panel: AntennaPanel):
+            def progress(position: Position) -> None:
+                self.events.put(("position", panel.update_position, position))
+                session.update_oled_position()
+
+            def worker() -> None:
+                try:
+                    position = session.guarded_slew_to(
+                        target.azimuth,
+                        target.elevation,
+                        panel.speed_value,
+                        self.tracking_stop_event,
+                        self.site.track_tolerance_degrees,
+                        progress,
+                    )
+                    session.update_oled(mode)
+                    self.events.put(("position", panel.update_position, position))
+                except Exception as exc:
+                    with lock:
+                        errors.append(f"{name}: {exc}")
+
+            return worker
+
+        for name, session in list(self.sessions.items()):
+            panel = self.panels.get(name)
+            if not panel:
+                continue
+            thread = threading.Thread(target=make_worker(name, session, panel), daemon=True)
+            threads.append(thread)
+            thread.start()
+
+        for thread in threads:
+            thread.join()
+        if errors:
+            self.tracking_stop_event.set()
+            raise RuntimeError("; ".join(errors))
+        return target
+
+    def finish_sun_slew(self, target: SunPosition) -> None:
+        self.apply_sun_position(target)
+        if not self.tracking_stop_event.is_set():
+            self.status_var.set(f"Sun target reached AZ {target.azimuth:0.2f} EL {target.elevation:0.2f}.")
+
+    def finish_sun_once(self, target: SunPosition) -> None:
+        self.sun_slew_active = False
+        self.finish_sun_slew(target)
+
+    def fail_sun_once(self, text: str) -> None:
+        self.sun_slew_active = False
+        self.set_status(text)
+
     def open_limits(self) -> None:
         if not self.configs:
             self.status_var.set("No antenna configs loaded.")
@@ -467,6 +598,7 @@ class WT2App(tk.Tk):
         LimitsDialog(self)
 
     def stop_all(self) -> None:
+        self.tracking_stop_event.set()
         for panel in self.panels.values():
             panel.stop_event.set()
         for session in self.sessions.values():

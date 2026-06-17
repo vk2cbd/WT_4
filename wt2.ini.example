@@ -1,3 +1,9 @@
+[site]
+latitude = -32.724000
+longitude = 152.130167
+track_interval_seconds = 20.0
+track_tolerance_degrees = 0.5
+
 [antenna:East]
 port = /dev/ttyUSB0
 baud = 9600

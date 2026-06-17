@@ -4,10 +4,32 @@
 from __future__ import annotations
 
 import configparser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
 from wt2_driver import AntennaConfig, Calibration, SafetyLimits
+
+
+@dataclass
+class SiteConfig:
+    latitude: float = -32.724000
+    longitude: float = 152.130167
+    track_interval_seconds: float = 20.0
+    track_tolerance_degrees: float = 0.5
+
+
+def load_site_config(path: Union[str, Path]) -> SiteConfig:
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    if path.exists():
+        parser.read(path)
+    return SiteConfig(
+        latitude=parser.getfloat("site", "latitude", fallback=-32.724000),
+        longitude=parser.getfloat("site", "longitude", fallback=152.130167),
+        track_interval_seconds=parser.getfloat("site", "track_interval_seconds", fallback=20.0),
+        track_tolerance_degrees=parser.getfloat("site", "track_tolerance_degrees", fallback=0.5),
+    )
 
 
 def load_configs(path: Union[str, Path]) -> dict[str, AntennaConfig]:
@@ -52,6 +74,19 @@ def load_configs(path: Union[str, Path]) -> dict[str, AntennaConfig]:
 def save_configs(path: Union[str, Path], configs: dict[str, AntennaConfig]) -> None:
     path = Path(path)
     parser = configparser.ConfigParser()
+    if path.exists():
+        parser.read(path)
+    if not parser.has_section("site"):
+        site = SiteConfig()
+        parser["site"] = {
+            "latitude": f"{site.latitude:.6f}",
+            "longitude": f"{site.longitude:.6f}",
+            "track_interval_seconds": f"{site.track_interval_seconds:.1f}",
+            "track_tolerance_degrees": f"{site.track_tolerance_degrees:.1f}",
+        }
+    for section in list(parser.sections()):
+        if section.startswith("antenna:"):
+            parser.remove_section(section)
     for name, config in configs.items():
         section = f"antenna:{name}"
         parser[section] = {

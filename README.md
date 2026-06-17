@@ -40,6 +40,16 @@ section names. The example uses:
 [antenna:West]
 ```
 
+Set the observer site in the same config:
+
+```ini
+[site]
+latitude = -32.724000
+longitude = 152.130167
+track_interval_seconds = 20.0
+track_tolerance_degrees = 0.5
+```
+
 Use stable device paths if available:
 
 ```bash
@@ -160,6 +170,22 @@ stops that axis if a safety check fails.
 Because there are no physical limit switches, loss of encoder replies or any
 protocol error is treated as a fault and movement stops.
 
+## Sun Tracking
+
+WT_2 includes a first-pass Sun target mode:
+
+- `Sun Once` computes the current Sun AZ/EL and slews both connected antennas toward it.
+- `Track Sun` repeats the Sun calculation and slew cycle using `track_interval_seconds`.
+- `Stop Track` stops tracking and sends stop commands.
+
+Sun tracking uses the same calibrated positions, software limits, margins, jog
+speed, max-jog watchdog, encoder polling, and stop commands as manual movement.
+If the Sun target is outside the configured safe limits, WT_2 stops instead of
+moving.
+
+Use low speed for the first tests and confirm the displayed Sun AZ/EL is
+reasonable before allowing larger slews.
+
 ## OLED Display
 
 WT_2 writes the OLED over the decoded display command:
@@ -181,5 +207,5 @@ checked without relying only on the Raspberry Pi screen.
 
 ## Not Yet Included
 
-WT_2 deliberately does not include automatic tracking yet. That should come
-after calibration and software-limit behaviour are proven on both antennas.
+WT_2 does not yet include Moon, RA/Dec, catalogue, or full astronomical schedule
+tracking. Those should come after Sun tracking is proven on both antennas.
