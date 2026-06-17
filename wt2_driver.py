@@ -113,6 +113,7 @@ class AntennaConfig:
     port: str
     baud: int = 9600
     open_delay: float = 5.0
+    gui_speed: int = 40
     calibration: Calibration = None
     limits: SafetyLimits = None
 
@@ -334,11 +335,14 @@ class SafeAntenna:
         self,
         direction: Direction,
         speed: int,
-        seconds: float,
+        seconds: Optional[float],
         stop_event: threading.Event,
         update_callback: Optional[Callable[[Position], None]] = None,
     ) -> None:
-        seconds = min(max(0.0, seconds), self.config.limits.max_jog_seconds)
+        deadline = time.monotonic() + self.config.limits.max_jog_seconds
+        if seconds is not None:
+            seconds = min(max(0.0, seconds), self.config.limits.max_jog_seconds)
+            deadline = time.monotonic() + seconds
         start = time.monotonic()
         axis = Axis.AZIMUTH if direction in (Direction.AZ_CW, Direction.AZ_CCW) else Axis.ELEVATION
         try:
@@ -347,13 +351,15 @@ class SafeAntenna:
                 self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
                 self._start_direction(direction, speed)
 
-            while not stop_event.is_set() and time.monotonic() - start < seconds:
+            while not stop_event.is_set() and time.monotonic() < deadline:
                 time.sleep(self.config.limits.poll_interval)
                 with self.lock:
                     pos = self.read_position_locked()
                     self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
                 if update_callback:
                     update_callback(pos)
+            if not stop_event.is_set() and seconds is None:
+                raise SafetyError(f"Maximum held-jog time {self.config.limits.max_jog_seconds:0.1f}s reached")
         except Exception as exc:
             self.fault = str(exc)
             raise

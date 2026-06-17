@@ -30,6 +30,14 @@ cp wt2.ini.example wt2.ini
 nano wt2.ini
 ```
 
+The antenna labels shown in the GUI and on the OLED come from the config
+section names. The example uses:
+
+```ini
+[antenna:East]
+[antenna:West]
+```
+
 Use stable device paths if available:
 
 ```bash
@@ -55,7 +63,7 @@ python3 wt2_gui.py --config wt2.ini
 3. Press `Connect`.
 4. Confirm raw and calibrated positions display for both antennas.
 5. Confirm each controller OLED has populated with the current safety/status display.
-6. Use short guarded jogs only after confirming the displayed positions are sensible.
+6. Use guarded press-and-hold jogs only after confirming the displayed positions are sensible.
 
 ## Calibration
 
@@ -74,6 +82,24 @@ el_offset = ...
 
 Status then shows both raw and calibrated positions. Software limits use the
 calibrated position.
+
+## Manual Control
+
+Jog buttons are press-and-hold:
+
+- movement starts when the button is pressed
+- calibrated AZ/EL updates while the antenna is moving
+- movement stops when the button is released
+- movement also stops on any limit, encoder, serial, or watchdog fault
+
+The speed field is persistent per antenna:
+
+```ini
+gui_speed = 40
+```
+
+Changing the speed text does not affect movement until `Enter`/`Return` is
+pressed in the speed field. This prevents half-entered values becoming active.
 
 ## Safety Limits
 

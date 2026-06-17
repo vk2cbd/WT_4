@@ -5,11 +5,12 @@ from __future__ import annotations
 
 import configparser
 from pathlib import Path
+from typing import Union
 
 from wt2_driver import AntennaConfig, Calibration, SafetyLimits
 
 
-def load_configs(path: str | Path) -> dict[str, AntennaConfig]:
+def load_configs(path: Union[str, Path]) -> dict[str, AntennaConfig]:
     path = Path(path)
     parser = configparser.ConfigParser()
     if not path.exists():
@@ -29,6 +30,7 @@ def load_configs(path: str | Path) -> dict[str, AntennaConfig]:
             port=port,
             baud=parser.getint(section, "baud", fallback=9600),
             open_delay=parser.getfloat(section, "open_delay", fallback=5.0),
+            gui_speed=parser.getint(section, "gui_speed", fallback=40),
             calibration=Calibration(
                 az_offset=parser.getfloat(section, "az_offset", fallback=0.0),
                 el_offset=parser.getfloat(section, "el_offset", fallback=0.0),
@@ -47,7 +49,7 @@ def load_configs(path: str | Path) -> dict[str, AntennaConfig]:
     return configs
 
 
-def save_configs(path: str | Path, configs: dict[str, AntennaConfig]) -> None:
+def save_configs(path: Union[str, Path], configs: dict[str, AntennaConfig]) -> None:
     path = Path(path)
     parser = configparser.ConfigParser()
     for name, config in configs.items():
@@ -56,6 +58,7 @@ def save_configs(path: str | Path, configs: dict[str, AntennaConfig]) -> None:
             "port": config.port,
             "baud": str(config.baud),
             "open_delay": f"{config.open_delay:g}",
+            "gui_speed": str(config.gui_speed),
             "az_offset": f"{config.calibration.az_offset:.6f}",
             "el_offset": f"{config.calibration.el_offset:.6f}",
             "az_min": f"{config.limits.az_min:.3f}",

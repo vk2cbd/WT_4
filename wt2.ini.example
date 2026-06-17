@@ -1,7 +1,8 @@
-[antenna:antenna_a]
+[antenna:East]
 port = /dev/ttyUSB0
 baud = 9600
 open_delay = 5
+gui_speed = 40
 
 # Calibration offsets are written by the GUI calibration button.
 az_offset = 0.000000
@@ -18,10 +19,11 @@ el_margin = 0.500
 max_jog_seconds = 5.000
 poll_interval = 0.200
 
-[antenna:antenna_b]
+[antenna:West]
 port = /dev/ttyUSB1
 baud = 9600
 open_delay = 5
+gui_speed = 40
 az_offset = 0.000000
 el_offset = 0.000000
 az_min = 270.000

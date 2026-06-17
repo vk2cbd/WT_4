@@ -7,18 +7,20 @@ import argparse
 import queue
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk
+from typing import Optional
 
 from wt2_config import load_configs, save_configs
-from wt2_driver import Direction, Position, SafeAntenna
+from wt2_driver import AntennaConfig, Direction, Position, SafeAntenna
 
 
 class AntennaPanel(ttk.Frame):
-    def __init__(self, master: tk.Misc, app: "WT2App", name: str) -> None:
+    def __init__(self, master: tk.Misc, app: "WT2App", name: str, config: Optional[AntennaConfig] = None) -> None:
         super().__init__(master, padding=8)
         self.app = app
         self.name = name
-        self.session: SafeAntenna | None = None
+        self.config = config
+        self.session: Optional[SafeAntenna] = None
         self.stop_event = threading.Event()
 
         self.status_var = tk.StringVar(value="DISCONNECTED")
@@ -30,8 +32,10 @@ class AntennaPanel(ttk.Frame):
         self.actual_az_var = tk.StringVar()
         self.actual_el_var = tk.StringVar()
 
-        self.speed_var = tk.IntVar(value=40)
-        self.seconds_var = tk.DoubleVar(value=1.0)
+        initial_speed = config.gui_speed if config else 40
+        self.speed_value = initial_speed
+        self.speed_var = tk.StringVar(value=str(initial_speed))
+        self.jog_thread_active = False
 
         self.columnconfigure(1, weight=1)
         ttk.Label(self, text=name.upper(), font=("TkDefaultFont", 13, "bold")).grid(row=0, column=0, sticky="w")
@@ -52,17 +56,18 @@ class AntennaPanel(ttk.Frame):
         control.grid(row=8, column=0, columnspan=2, sticky="ew")
         for col in range(3):
             control.columnconfigure(col, weight=1)
-        ttk.Button(control, text="AZ CCW", command=lambda: self.jog(Direction.AZ_CCW)).grid(row=0, column=0, sticky="ew")
-        ttk.Button(control, text="AZ CW", command=lambda: self.jog(Direction.AZ_CW)).grid(row=0, column=2, sticky="ew")
-        ttk.Button(control, text="EL UP", command=lambda: self.jog(Direction.EL_UP)).grid(row=1, column=1, sticky="ew")
-        ttk.Button(control, text="EL DOWN", command=lambda: self.jog(Direction.EL_DOWN)).grid(row=2, column=1, sticky="ew")
+        self._hold_button(control, "AZ CCW", Direction.AZ_CCW).grid(row=0, column=0, sticky="ew")
+        self._hold_button(control, "AZ CW", Direction.AZ_CW).grid(row=0, column=2, sticky="ew")
+        self._hold_button(control, "EL UP", Direction.EL_UP).grid(row=1, column=1, sticky="ew")
+        self._hold_button(control, "EL DOWN", Direction.EL_DOWN).grid(row=2, column=1, sticky="ew")
 
         settings = ttk.Frame(self)
         settings.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(settings, text="Speed").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(settings, from_=0, to=100, textvariable=self.speed_var, width=5).grid(row=0, column=1, sticky="w")
-        ttk.Label(settings, text="Seconds").grid(row=0, column=2, sticky="w", padx=(8, 0))
-        ttk.Spinbox(settings, from_=0.1, to=5.0, increment=0.1, textvariable=self.seconds_var, width=5).grid(row=0, column=3, sticky="w")
+        speed_entry = ttk.Entry(settings, textvariable=self.speed_var, width=5)
+        speed_entry.grid(row=0, column=1, sticky="w")
+        speed_entry.bind("<Return>", self.commit_speed)
+        ttk.Label(settings, text="press Enter to commit").grid(row=0, column=2, sticky="w", padx=(8, 0))
 
         ttk.Button(self, text="STOP", command=self.stop).grid(row=10, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(self, textvariable=self.fault_var, foreground="red", wraplength=260).grid(
@@ -73,12 +78,21 @@ class AntennaPanel(ttk.Frame):
         ttk.Label(self, text=label).grid(row=row, column=0, sticky="w")
         ttk.Label(self, textvariable=variable, font=("TkDefaultFont", 11, "bold")).grid(row=row, column=1, sticky="e")
 
+    def _hold_button(self, master: tk.Misc, text: str, direction: Direction) -> ttk.Button:
+        button = ttk.Button(master, text=text)
+        button.bind("<ButtonPress-1>", lambda _event: self.start_jog(direction))
+        button.bind("<ButtonRelease-1>", lambda _event: self.stop())
+        button.bind("<Leave>", lambda _event: self.stop())
+        return button
+
     def attach(self, session: SafeAntenna) -> None:
         self.session = session
+        self.speed_value = session.config.gui_speed
+        self.speed_var.set(str(self.speed_value))
         self.status_var.set("CONNECTED")
         self.update_position(session.last_position)
 
-    def update_position(self, position: Position | None) -> None:
+    def update_position(self, position: Optional[Position]) -> None:
         if position is None:
             return
         self.raw_az_var.set(f"{position.raw_azimuth:0.2f}")
@@ -107,26 +121,53 @@ class AntennaPanel(ttk.Frame):
 
         def work() -> Position:
             position = self.session.calibrate(actual_az, actual_el)
-            self.app.save_config()
+            self.app.save_config("Calibration saved.")
             self.session.update_oled("CAL")
             return position
 
         self.app.run_worker(work, self.update_position, self.set_fault)
 
-    def jog(self, direction: Direction) -> None:
-        if not self.session:
+    def commit_speed(self, _event: Optional[object] = None) -> bool:
+        try:
+            value = max(0, min(100, int(self.speed_var.get())))
+        except ValueError:
+            self.speed_var.set(str(self.speed_value))
+            self.set_fault("Speed must be a whole number from 0 to 100.")
+            return False
+        self.speed_value = value
+        self.speed_var.set(str(value))
+        config = self.session.config if self.session else self.config
+        if config:
+            config.gui_speed = value
+            self.app.save_config("Settings saved.")
+        self.set_fault("")
+        return True
+
+    def start_jog(self, direction: Direction) -> None:
+        if not self.session or self.jog_thread_active:
             return
         self.stop_event.clear()
-        speed = self.speed_var.get()
-        seconds = self.seconds_var.get()
+        speed = self.speed_value
+        self.jog_thread_active = True
 
         def work() -> Position:
-            self.session.guarded_jog(direction, speed, seconds, self.stop_event)
+            self.session.guarded_jog(direction, speed, None, self.stop_event, self.queue_position_update)
             position = self.session.read_position()
             self.session.update_oled("MANUAL")
             return position
 
-        self.app.run_worker(work, self.update_position, self.set_fault)
+        self.app.run_worker(work, self.finish_jog, self.finish_jog_fault)
+
+    def queue_position_update(self, position: Position) -> None:
+        self.app.events.put(("position", self.update_position, position))
+
+    def finish_jog(self, position: Position) -> None:
+        self.jog_thread_active = False
+        self.update_position(position)
+
+    def finish_jog_fault(self, text: str) -> None:
+        self.jog_thread_active = False
+        self.set_fault(text)
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -164,7 +205,7 @@ class WT2App(tk.Tk):
         self.panels: dict[str, AntennaPanel] = {}
         names = list(self.configs) or ["antenna_a", "antenna_b"]
         for index, name in enumerate(names[:2]):
-            panel = AntennaPanel(body, self, name)
+            panel = AntennaPanel(body, self, name, self.configs.get(name))
             panel.grid(row=0, column=index, sticky="nsew", padx=4)
             self.panels[name] = panel
 
@@ -216,9 +257,9 @@ class WT2App(tk.Tk):
         self.refresh_all()
         self.after(1500, self.periodic_refresh)
 
-    def save_config(self) -> None:
+    def save_config(self, message: str = "Settings saved.") -> None:
         save_configs(self.config_path, self.configs)
-        self.status_var.set("Calibration saved.")
+        self.status_var.set(message)
 
     def run_worker(self, work, on_success, on_error) -> None:
         def target() -> None:
@@ -235,7 +276,7 @@ class WT2App(tk.Tk):
                 kind, callback, payload = self.events.get_nowait()
             except queue.Empty:
                 break
-            if kind == "ok":
+            if kind in ("ok", "position"):
                 callback(payload)
             else:
                 callback(str(payload))
