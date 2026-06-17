@@ -40,14 +40,14 @@ class LimitsDialog(tk.Toplevel):
 
     def _build_limit_fields(self, frame: ttk.Frame, config: AntennaConfig) -> dict[str, tk.StringVar]:
         values = {
-            "az_min": tk.StringVar(value=f"{config.limits.az_min:0.3f}"),
-            "az_max": tk.StringVar(value=f"{config.limits.az_max:0.3f}"),
-            "el_min": tk.StringVar(value=f"{config.limits.el_min:0.3f}"),
-            "el_max": tk.StringVar(value=f"{config.limits.el_max:0.3f}"),
-            "az_margin": tk.StringVar(value=f"{config.limits.az_margin:0.3f}"),
-            "el_margin": tk.StringVar(value=f"{config.limits.el_margin:0.3f}"),
-            "max_jog_seconds": tk.StringVar(value=f"{config.limits.max_jog_seconds:0.1f}"),
-            "poll_interval": tk.StringVar(value=f"{config.limits.poll_interval:0.3f}"),
+            "az_min": tk.StringVar(value=f"{config.limits.az_min:0.0f}"),
+            "az_max": tk.StringVar(value=f"{config.limits.az_max:0.0f}"),
+            "el_min": tk.StringVar(value=f"{config.limits.el_min:0.0f}"),
+            "el_max": tk.StringVar(value=f"{config.limits.el_max:0.0f}"),
+            "az_margin": tk.StringVar(value=f"{config.limits.az_margin:0.1f}"),
+            "el_margin": tk.StringVar(value=f"{config.limits.el_margin:0.1f}"),
+            "max_jog_seconds": tk.StringVar(value=f"{config.limits.max_jog_seconds:0.0f}"),
+            "poll_interval": tk.StringVar(value=f"{config.limits.poll_interval:0.1f}"),
         }
         labels = [
             ("AZ min", "az_min"),
@@ -90,8 +90,24 @@ class LimitsDialog(tk.Toplevel):
             if name in self.app.panels:
                 self.app.panels[name].sync_config_settings()
 
+        self._format_fields(parsed)
         self.app.save_config("Limits saved.")
         self.destroy()
+
+    def _format_fields(self, parsed: dict[str, dict[str, float]]) -> None:
+        formats = {
+            "az_min": "{:0.0f}",
+            "az_max": "{:0.0f}",
+            "el_min": "{:0.0f}",
+            "el_max": "{:0.0f}",
+            "az_margin": "{:0.1f}",
+            "el_margin": "{:0.1f}",
+            "max_jog_seconds": "{:0.0f}",
+            "poll_interval": "{:0.1f}",
+        }
+        for name, values in parsed.items():
+            for key, value in values.items():
+                self.entries[name][key].set(formats[key].format(value))
 
     def _validate_limits(self, name: str, values: dict[str, float]) -> None:
         if not (0.0 <= values["az_min"] <= 360.0 and 0.0 <= values["az_max"] <= 360.0):
