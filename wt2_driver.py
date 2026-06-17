@@ -415,14 +415,14 @@ class SafeAntenna:
                 "direction": Direction.AZ_CW if az_error > 0 else Direction.AZ_CCW,
                 "target": target_azimuth,
                 "previous_error": az_error,
-                "slow": False,
+                "slow": abs(az_error) <= slow_threshold,
             }
         if abs(el_error) > tolerance:
             active[Axis.ELEVATION] = {
                 "direction": Direction.EL_UP if el_error > 0 else Direction.EL_DOWN,
                 "target": target_elevation,
                 "previous_error": el_error,
-                "slow": False,
+                "slow": abs(el_error) <= slow_threshold,
             }
         if not active:
             return pos
@@ -434,7 +434,8 @@ class SafeAntenna:
                 for state in active.values():
                     direction = state["direction"]
                     self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
-                    self._start_direction(direction, fast_speed)
+                    start_speed = slow_speed if state["slow"] else fast_speed
+                    self._start_direction(direction, start_speed)
 
             while active and not stop_event.is_set() and time.monotonic() < deadline:
                 time.sleep(self.config.limits.poll_interval)

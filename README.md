@@ -194,6 +194,9 @@ Each antenna uses its own `Speed` value as the normal slew rate. When an axis is
 within `Slow deg` of the target, WT_2 changes that axis to `Slow speed` until it
 reaches the tracking tolerance.
 
+Fine tracking moves that start already inside `Slow deg` begin at `Slow speed`.
+The Tracking dialog requires `Slow speed` to be lower than each antenna `Speed`.
+
 `Interval` is limited to 0.1..10.0 seconds in 0.1 second steps. `Tolerance` is
 limited to +/-0.01..0.20 degrees in 0.01 degree steps. A negative tolerance
 leads the Sun along its current motion direction by that amount and tracks to

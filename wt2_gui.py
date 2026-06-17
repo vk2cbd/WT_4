@@ -253,7 +253,7 @@ class TrackingDialog(tk.Toplevel):
                 name: (int(self.speed_vars[name].get()), float(self.max_jog_vars[name].get()))
                 for name in self.app.configs
             }
-            self._validate_antennas(antenna_values)
+            self._validate_antennas(antenna_values, site.slow_speed)
         except ValueError:
             messagebox.showerror("Invalid Tracking", "Tracking values must be numeric.", parent=self)
             return
@@ -271,10 +271,12 @@ class TrackingDialog(tk.Toplevel):
         self.app.save_tracking_and_config("Tracking saved.")
         self.destroy()
 
-    def _validate_antennas(self, values: dict[str, tuple[int, float]]) -> None:
+    def _validate_antennas(self, values: dict[str, tuple[int, float]], slow_speed: int) -> None:
         for name, (speed, max_jog) in values.items():
-            if not (0 <= speed <= 100):
-                raise RuntimeError(f"{name}: speed must be 0..100.")
+            if not (1 <= speed <= 100):
+                raise RuntimeError(f"{name}: speed must be 1..100.")
+            if slow_speed >= speed:
+                raise RuntimeError(f"{name}: slow speed must be lower than speed.")
             if not (1.0 <= max_jog <= 600.0):
                 raise RuntimeError(f"{name}: max jog must be 1..600 seconds.")
 
@@ -680,8 +682,8 @@ class WT2App(tk.Tk):
             raise RuntimeError("Tracking interval must be 0.1..10.0 seconds.")
         if not (-0.2 <= site.track_tolerance_degrees <= 0.2) or site.track_tolerance_degrees == 0.0:
             raise RuntimeError("Tracking tolerance must be -0.20..-0.01 or 0.01..0.20 degrees.")
-        if not (0 <= site.slow_speed <= 100):
-            raise RuntimeError("Slow speed must be 0..100.")
+        if not (1 <= site.slow_speed <= 100):
+            raise RuntimeError("Slow speed must be 1..100.")
         if not (abs(site.track_tolerance_degrees) <= site.slow_threshold_degrees <= 30.0):
             raise RuntimeError("Slow deg must be at least tolerance and no more than 30 degrees.")
 
