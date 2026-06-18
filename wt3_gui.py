@@ -306,9 +306,6 @@ class SourcesDialog(tk.Toplevel):
         except RuntimeError as exc:
             messagebox.showerror("Invalid Source", str(exc), parent=self)
             return
-        old_selection = self.tree.selection()
-        if old_selection and old_selection[0] != source.name:
-            self.sources.pop(old_selection[0], None)
         self.sources[source.name] = source
         self.refresh_tree()
         self.tree.selection_set(source.name)
