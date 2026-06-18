@@ -134,6 +134,24 @@ class Position:
     elevation: float
 
 
+@dataclass
+class EncoderInfo:
+    axis: Axis
+    address: int
+    encoder_type: str
+    model: int
+    version: str
+    config: str
+    serial: int
+    date: str
+    resolution: int
+    position: float
+    mode: int
+    range_count: int
+    pulses_per_revolution: int
+    index_mode: int
+
+
 AXIS_MAPS = {
     Axis.AZIMUTH: AxisMap(prefix=0xF0, positive_channel=0x04, negative_channel=0x03),
     Axis.ELEVATION: AxisMap(prefix=0xF1, positive_channel=0x01, negative_channel=0x02),
@@ -187,6 +205,44 @@ class WinTrakController:
 
     def read_elevation(self) -> float:
         return self._read_angle(bytes([0x11]))
+
+    def read_encoder_info(self, axis: Axis) -> EncoderInfo:
+        prefix = AXIS_MAPS[axis].prefix
+        info = self._write_read(bytes([prefix, 0x08]), 15)
+        resolution = int.from_bytes(self._write_read(bytes([prefix, 0x09]), 3)[:2], byteorder="big", signed=False)
+        mode = self._write_read(bytes([prefix, 0x0B]), 2)[0]
+        range_count = int.from_bytes(self._write_read(bytes([prefix, 0x28]), 5)[:4], byteorder="big", signed=False)
+        pulses_reply = self._write_read(bytes([prefix, 0x2A]), 6)
+        return EncoderInfo(
+            axis=axis,
+            address=info[0],
+            encoder_type="SEI",
+            model=info[1],
+            version=f"{info[2]}.{info[3]:02d}",
+            config=f"{info[4]}.{info[5]:02d}",
+            serial=int.from_bytes(info[6:10], byteorder="big", signed=False),
+            date=f"{info[10]:02d}-{info[11]:02d}-{int.from_bytes(info[12:14], byteorder='big', signed=False)}",
+            resolution=resolution,
+            position=self.read_axis_position(axis),
+            mode=mode,
+            range_count=range_count,
+            pulses_per_revolution=int.from_bytes(pulses_reply[:4], byteorder="big", signed=False),
+            index_mode=pulses_reply[4],
+        )
+
+    def read_axis_position(self, axis: Axis) -> float:
+        if axis == Axis.AZIMUTH:
+            return self.read_azimuth()
+        return self.read_elevation()
+
+    def set_axis_position(self, axis: Axis, position_degrees: float) -> float:
+        position_counts = int(round(position_degrees * 100.0))
+        if not (0 <= position_counts <= 0xFFFF):
+            raise ValueError("Position must encode into 0..655.35 degrees.")
+        prefix = AXIS_MAPS[axis].prefix
+        payload = position_counts.to_bytes(2, byteorder="big", signed=False)
+        self._write_read(bytes([prefix, 0x02]) + payload, 1)
+        return self.read_axis_position(axis)
 
     def azimuth_cw(self, speed: int = 100) -> None:
         self._move(Axis.AZIMUTH, AXIS_MAPS[Axis.AZIMUTH].positive_channel, speed)
@@ -350,6 +406,25 @@ class SafeAntenna:
             raw_el = self.controller.read_elevation()
             self.config.calibration.az_offset = shortest_angle_delta(raw_az, actual_azimuth)
             self.config.calibration.el_offset = actual_elevation - raw_el
+            return self.read_position_locked()
+
+    def scan_encoders(self) -> dict[Axis, EncoderInfo]:
+        with self.lock:
+            return {
+                Axis.AZIMUTH: self.controller.read_encoder_info(Axis.AZIMUTH),
+                Axis.ELEVATION: self.controller.read_encoder_info(Axis.ELEVATION),
+            }
+
+    def set_encoder_position(self, axis: Axis, position_degrees: float) -> Position:
+        with self.lock:
+            self.controller.stop_all()
+            readback = self.controller.set_axis_position(axis, position_degrees)
+            if abs(readback - position_degrees) > 0.01:
+                raise WinTrakProtocolError(f"Set {axis.value} to {position_degrees:0.2f}, read back {readback:0.2f}")
+            if axis == Axis.AZIMUTH:
+                self.config.calibration.az_offset = 0.0
+            else:
+                self.config.calibration.el_offset = 0.0
             return self.read_position_locked()
 
     def guarded_jog(

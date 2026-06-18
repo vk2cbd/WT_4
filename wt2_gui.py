@@ -23,7 +23,7 @@ from wt2_config import (
     save_site_config,
     save_sources,
 )
-from wt2_driver import AntennaConfig, Direction, Position, SafeAntenna, shortest_angle_delta
+from wt2_driver import AntennaConfig, Axis, Direction, EncoderInfo, Position, SafeAntenna, shortest_angle_delta
 from wt2_solar import sun_position
 
 
@@ -388,6 +388,145 @@ class CalibrationDialog(tk.Toplevel):
         el_var.set(f"{position.elevation:0.2f}")
         panel.clear_message()
         panel.update_position(position)
+
+
+class EncodersDialog(tk.Toplevel):
+    COLUMNS = (
+        "Antenna",
+        "Axis",
+        "Addr",
+        "Type",
+        "Model",
+        "Version",
+        "Config",
+        "Serial",
+        "Date",
+        "Resolution",
+        "Position",
+        "Mode",
+    )
+
+    def __init__(self, app: "WT2App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("Encoders")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        self.position_vars: dict[tuple[str, Axis], tk.StringVar] = {}
+        self.row_widgets: list[tk.Widget] = []
+
+        self.body = ttk.Frame(self, padding=10)
+        self.body.grid(row=0, column=0, sticky="nsew")
+        for column, title in enumerate(self.COLUMNS):
+            ttk.Label(self.body, text=title, font=("TkDefaultFont", 9, "bold")).grid(
+                row=0, column=column, sticky="w", padx=3, pady=(0, 4)
+            )
+
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.grid(row=1, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        ttk.Button(buttons, text="Scan", command=self.scan).grid(row=0, column=1, padx=(0, 6))
+        ttk.Button(buttons, text="Close", command=self.destroy).grid(row=0, column=2)
+        self.scan()
+
+    def scan(self) -> None:
+        if not self.app.sessions:
+            self.show_error("Connect antennas before encoder scan.")
+            return
+
+        def work() -> dict[str, dict[Axis, EncoderInfo]]:
+            return {name: session.scan_encoders() for name, session in self.app.sessions.items()}
+
+        self.app.run_worker(work, self.finish_scan, self.show_error)
+
+    def finish_scan(self, result: dict[str, dict[Axis, EncoderInfo]]) -> None:
+        for widget in self.row_widgets:
+            widget.destroy()
+        self.row_widgets.clear()
+        self.position_vars.clear()
+        row = 1
+        for name, axes in result.items():
+            for axis in (Axis.AZIMUTH, Axis.ELEVATION):
+                info = axes[axis]
+                self.add_row(row, name, info)
+                row += 1
+
+    def add_row(self, row: int, name: str, info: EncoderInfo) -> None:
+        values = (
+            name,
+            "AZ" if info.axis == Axis.AZIMUTH else "EL",
+            str(info.address),
+            info.encoder_type,
+            str(info.model),
+            info.version,
+            info.config,
+            str(info.serial),
+            info.date,
+            str(info.resolution),
+            f"{info.position:0.2f}",
+            str(info.mode),
+        )
+        for column, value in enumerate(values):
+            if self.COLUMNS[column] == "Position":
+                var = tk.StringVar(value=value)
+                entry = ttk.Entry(self.body, textvariable=var, width=8)
+                entry.grid(row=row, column=column, sticky="ew", padx=3, pady=2)
+                self.position_vars[(name, info.axis)] = var
+                self.row_widgets.append(entry)
+            else:
+                label = ttk.Label(self.body, text=value)
+                label.grid(row=row, column=column, sticky="w", padx=3, pady=2)
+                self.row_widgets.append(label)
+        button = ttk.Button(self.body, text="Set", command=lambda n=name, a=info.axis: self.set_position(n, a))
+        button.grid(row=row, column=len(self.COLUMNS), sticky="ew", padx=3, pady=2)
+        self.row_widgets.append(button)
+
+    def set_position(self, name: str, axis: Axis) -> None:
+        panel = self.app.panels.get(name)
+        session = self.app.sessions.get(name)
+        if panel is None or session is None:
+            self.show_error(f"{name} is not connected.")
+            return
+        try:
+            position = float(self.position_vars[(name, axis)].get())
+        except ValueError:
+            self.show_error("Position must be numeric.")
+            return
+        axis_label = "AZ" if axis == Axis.AZIMUTH else "EL"
+        if axis == Axis.AZIMUTH and not (0.0 <= position <= 360.0):
+            self.show_error("AZ position must be 0..360 degrees.")
+            return
+        if axis == Axis.ELEVATION and not (0.0 <= position <= 180.0):
+            self.show_error("EL Arduino position must be 0..180 degrees.")
+            return
+        if not messagebox.askyesno(
+            "Set Encoder Position",
+            f"Set {name} {axis_label} Arduino position to {position:0.2f}?\n\n"
+            "This resets the WT_2 software calibration offset for this axis to zero.",
+            parent=self,
+        ):
+            return
+
+        def work() -> Position:
+            updated = session.set_encoder_position(axis, position)
+            self.app.save_config("Encoder position saved.")
+            session.update_oled("CAL")
+            return updated
+
+        self.app.run_worker(
+            work,
+            lambda updated, p=panel: self.finish_set(p, updated),
+            self.show_error,
+        )
+
+    def finish_set(self, panel: "AntennaPanel", position: Position) -> None:
+        panel.clear_message()
+        panel.update_position(position)
+        self.scan()
+
+    def show_error(self, text: str) -> None:
+        messagebox.showerror("Encoders", text, parent=self)
 
 
 class TrackingDialog(tk.Toplevel):
@@ -783,6 +922,7 @@ class WT2App(tk.Tk):
         ttk.Button(top_row_1, text="Tracking", command=self.open_tracking).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Sources", command=self.open_sources).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Calibration", command=self.open_calibration).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_1, text="Encoders", command=self.open_encoders).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="STOP ALL", command=self.stop_all).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_2, text="Track Sun", command=lambda: self.start_tracking("sun")).pack(side="left")
         ttk.Button(top_row_2, text="Track Moon", command=lambda: self.start_tracking("moon")).pack(side="left", padx=(6, 0))
@@ -1094,6 +1234,12 @@ class WT2App(tk.Tk):
             self.status_var.set("No antenna configs loaded.")
             return
         CalibrationDialog(self)
+
+    def open_encoders(self) -> None:
+        if not self.configs:
+            self.status_var.set("No antenna configs loaded.")
+            return
+        EncodersDialog(self)
 
     def refresh_source_status(self) -> None:
         if self.site.selected_source and self.site.selected_source in self.sources:

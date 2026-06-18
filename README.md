@@ -117,6 +117,29 @@ el_offset = ...
 Status then shows both raw and calibrated positions. Software limits use the
 calibrated position.
 
+## Encoder Scan
+
+Press `Encoders` to scan the Arduino encoder configuration for each connected
+antenna. The dialog shows the decoded SEI metadata, current Arduino-held
+position, resolution, and mode for AZ and EL.
+
+The `Position` field is editable. Press `Set` on a row to write the displayed
+position into the Arduino for that axis using the decoded WinTrak command:
+
+```text
+F0 02 HH LL   set AZ Arduino position
+F1 02 HH LL   set EL Arduino position
+```
+
+The value is encoded in hundredths of a degree. WT_2 immediately reads the axis
+back and confirms it matches. A successful Arduino position write resets the
+WT_2 software calibration offset for that axis to zero so calibration is not
+applied twice.
+
+This does not write to the SVH3 quadrature pulse generator itself; that encoder
+has no writable memory. It writes the position counter held by the Arduino
+firmware.
+
 ## Manual Control
 
 Jog buttons are press-and-hold:
