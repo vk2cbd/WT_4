@@ -304,7 +304,6 @@ class SourcesDialog(tk.Toplevel):
         self.app.sources = self.sources
         save_sources(self.app.config_path, self.app.sources, self.app.site.selected_source)
         self.app.save_site_settings(message)
-        self.app.refresh_source_status()
 
     def validate_source(self, source: SourceConfig) -> None:
         if not (0.0 <= source.ra_hours < 24.0):
@@ -734,8 +733,9 @@ class AntennaPanel(ttk.Frame):
         self._hold_button(control, "AZ+", Direction.AZ_CW).grid(row=1, column=2, sticky="ew", padx=2, pady=2)
         self._hold_button(control, "EL-", Direction.EL_DOWN).grid(row=2, column=1, sticky="ew", padx=2, pady=2)
 
+        self.reference_frame: Optional[ttk.Frame] = None
         ttk.Label(self, textvariable=self.fault_var, foreground="red", wraplength=260).grid(
-            row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+            row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0)
         )
 
     def _position_cell(self, parent: tk.Misc, row: int, column: int, label: str, variable: tk.StringVar) -> None:
@@ -743,6 +743,12 @@ class AntennaPanel(ttk.Frame):
         ttk.Label(parent, textvariable=variable, font=("TkDefaultFont", 11, "bold")).grid(
             row=row, column=column + 1, sticky="e", padx=(0, 8)
         )
+
+    def add_reference_block(self, sun_var: tk.StringVar, moon_var: tk.StringVar) -> None:
+        self.reference_frame = ttk.Frame(self)
+        self.reference_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(self.reference_frame, textvariable=sun_var).grid(row=0, column=0, sticky="w")
+        ttk.Label(self.reference_frame, textvariable=moon_var).grid(row=1, column=0, sticky="w", pady=(2, 0))
 
     def _hold_button(self, master: tk.Misc, text: str, direction: Direction) -> ttk.Button:
         button = ttk.Button(master, text=text)
@@ -905,7 +911,6 @@ class WT3App(tk.Tk):
         self.target_el_var = tk.StringVar(value="EL --")
         self.sun_ref_var = tk.StringVar(value="Sun AZ -- EL --")
         self.moon_ref_var = tk.StringVar(value="Moon AZ -- EL --")
-        self.source_status_var = tk.StringVar()
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -935,11 +940,6 @@ class WT3App(tk.Tk):
         ttk.Label(target_bar, textvariable=self.target_name_var).pack(side="left")
         ttk.Label(target_bar, textvariable=self.target_az_var).pack(side="left", padx=(16, 0))
         ttk.Label(target_bar, textvariable=self.target_el_var).pack(side="left", padx=(16, 0))
-        ttk.Label(target_bar, textvariable=self.source_status_var).pack(side="left", padx=(16, 0))
-        reference_bar = ttk.Frame(self, padding=(8, 0, 8, 2))
-        reference_bar.pack(fill="x")
-        ttk.Label(reference_bar, textvariable=self.sun_ref_var).pack(side="left")
-        ttk.Label(reference_bar, textvariable=self.moon_ref_var).pack(side="left", padx=(16, 0))
 
         body = ttk.Frame(self, padding=8)
         body.pack(fill="both", expand=True)
@@ -951,11 +951,12 @@ class WT3App(tk.Tk):
         for index, name in enumerate(names[:2]):
             panel = AntennaPanel(body, self, name, self.configs.get(name))
             panel.grid(row=0, column=index, sticky="nsew", padx=4)
+            if index == 0:
+                panel.add_reference_block(self.sun_ref_var, self.moon_ref_var)
             self.panels[name] = panel
 
         if not self.configs:
             self.status_var.set(f"No antennas found in {config_path}. Copy wt3.ini.example to wt3.ini.")
-        self.refresh_source_status()
 
         self.after(100, self.process_events)
         self.update_reference_positions()
@@ -1248,15 +1249,6 @@ class WT3App(tk.Tk):
             self.status_var.set("No antenna configs loaded.")
             return
         EncodersDialog(self)
-
-    def refresh_source_status(self) -> None:
-        if self.site.selected_source and self.site.selected_source in self.sources:
-            source = self.sources[self.site.selected_source]
-            self.source_status_var.set(
-                f"Source {source.name} RA {source.ra_hours:0.4f} Dec {source.dec_degrees:0.2f} Flux {source.flux_4800_mhz:0.1f}"
-            )
-        else:
-            self.source_status_var.set("Source none")
 
     def update_reference_positions(self) -> None:
         try:
