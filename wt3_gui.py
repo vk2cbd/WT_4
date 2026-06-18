@@ -200,6 +200,9 @@ class SourcesDialog(tk.Toplevel):
         self.ra_var = tk.StringVar()
         self.dec_var = tk.StringVar()
         self.flux_var = tk.StringVar()
+        self.current_position_var = tk.StringVar(value="Current AZ -- EL --")
+        self.position_after_id: Optional[str] = None
+        self.protocol("WM_DELETE_WINDOW", self.close)
 
         body = ttk.Frame(self, padding=10)
         body.grid(row=0, column=0, sticky="nsew")
@@ -219,12 +222,16 @@ class SourcesDialog(tk.Toplevel):
         self._field(fields, "RA h", self.ra_var, 1, 10)
         self._field(fields, "Dec deg", self.dec_var, 2, 10)
         self._field(fields, "4800 MHz flux", self.flux_var, 3, 10)
+        ttk.Label(fields, textvariable=self.current_position_var, font=("TkDefaultFont", 10, "bold")).grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(8, 0)
+        )
 
         ttk.Button(body, text="Add/Update", command=self.add_update).grid(row=2, column=0, sticky="ew", pady=(8, 0))
         ttk.Button(body, text="Remove", command=self.remove).grid(row=2, column=1, sticky="ew", pady=(8, 0), padx=(6, 0))
         ttk.Button(body, text="Select", command=self.select_source).grid(row=2, column=2, sticky="ew", pady=(8, 0), padx=(6, 0))
         ttk.Button(body, text="Close", command=self.close).grid(row=2, column=3, sticky="ew", pady=(8, 0), padx=(6, 0))
         self.refresh_tree()
+        self.update_current_position()
 
     def _field(self, parent: ttk.Frame, label: str, variable: tk.StringVar, row: int, width: int) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
@@ -248,6 +255,26 @@ class SourcesDialog(tk.Toplevel):
         self.ra_var.set(f"{source.ra_hours:0.6f}")
         self.dec_var.set(f"{source.dec_degrees:0.4f}")
         self.flux_var.set(f"{source.flux_4800_mhz:0.1f}")
+        self.refresh_current_position()
+
+    def update_current_position(self) -> None:
+        self.refresh_current_position()
+        self.position_after_id = self.after(1000, self.update_current_position)
+
+    def refresh_current_position(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            self.current_position_var.set("Current AZ -- EL --")
+        else:
+            source = self.sources[selection[0]]
+            position = source_position(
+                source.name,
+                source.ra_hours,
+                source.dec_degrees,
+                self.app.site.latitude,
+                self.app.site.longitude,
+            )
+            self.current_position_var.set(f"Current AZ {position.azimuth:0.2f} EL {position.elevation:0.2f}")
 
     def add_update(self) -> None:
         try:
@@ -286,6 +313,7 @@ class SourcesDialog(tk.Toplevel):
         self.ra_var.set("")
         self.dec_var.set("")
         self.flux_var.set("")
+        self.current_position_var.set("Current AZ -- EL --")
         self.refresh_tree()
 
     def select_source(self) -> None:
@@ -297,6 +325,9 @@ class SourcesDialog(tk.Toplevel):
         self.save_to_app(f"Selected source {selection[0]}.")
 
     def close(self) -> None:
+        if self.position_after_id is not None:
+            self.after_cancel(self.position_after_id)
+            self.position_after_id = None
         self.save_to_app("Sources saved.")
         self.destroy()
 
