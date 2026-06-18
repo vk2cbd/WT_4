@@ -315,6 +315,81 @@ class SourcesDialog(tk.Toplevel):
             raise RuntimeError("Flux cannot be negative.")
 
 
+class CalibrationDialog(tk.Toplevel):
+    def __init__(self, app: "WT2App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("Calibration")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        self.entries: dict[str, tuple[tk.StringVar, tk.StringVar]] = {}
+
+        tabs = ttk.Notebook(self)
+        tabs.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        for name, panel in app.panels.items():
+            frame = ttk.Frame(tabs, padding=10)
+            tabs.add(frame, text=name)
+            az_var = tk.StringVar()
+            el_var = tk.StringVar()
+            if panel.session and panel.session.last_position:
+                az_var.set(f"{panel.session.last_position.azimuth:0.2f}")
+                el_var.set(f"{panel.session.last_position.elevation:0.2f}")
+            ttk.Label(frame, text="Actual AZ").grid(row=0, column=0, sticky="w", pady=2)
+            ttk.Entry(frame, textvariable=az_var, width=8).grid(row=0, column=1, sticky="w", pady=2)
+            ttk.Label(frame, text="Actual EL").grid(row=1, column=0, sticky="w", pady=2)
+            ttk.Entry(frame, textvariable=el_var, width=8).grid(row=1, column=1, sticky="w", pady=2)
+            ttk.Button(frame, text="Calibrate", command=lambda n=name: self.calibrate(n)).grid(
+                row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+            )
+            self.entries[name] = (az_var, el_var)
+
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.grid(row=1, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        ttk.Button(buttons, text="Close", command=self.destroy).grid(row=0, column=1)
+
+    def calibrate(self, name: str) -> None:
+        panel = self.app.panels.get(name)
+        if not panel or not panel.session:
+            messagebox.showerror("Calibration", f"{name} is not connected.", parent=self)
+            return
+        az_var, el_var = self.entries[name]
+        try:
+            actual_az = float(az_var.get())
+            actual_el = float(el_var.get())
+        except ValueError:
+            messagebox.showerror("Calibration", "Actual AZ and EL must be numeric.", parent=self)
+            return
+        if not (0.0 <= actual_az <= 360.0 and -90.0 <= actual_el <= 180.0):
+            messagebox.showerror("Calibration", "Calibration AZ must be 0..360 and EL -90..180.", parent=self)
+            return
+
+        def work() -> Position:
+            position = panel.session.calibrate(actual_az, actual_el)
+            self.app.save_config("Calibration saved.")
+            panel.session.update_oled("CAL")
+            return position
+
+        self.app.run_worker(
+            work,
+            lambda position, p=panel, av=az_var, ev=el_var: self.finish_calibration(p, av, ev, position),
+            lambda text: messagebox.showerror("Calibration", text, parent=self),
+        )
+
+    def finish_calibration(
+        self,
+        panel: "AntennaPanel",
+        az_var: tk.StringVar,
+        el_var: tk.StringVar,
+        position: Position,
+    ) -> None:
+        az_var.set(f"{position.azimuth:0.2f}")
+        el_var.set(f"{position.elevation:0.2f}")
+        panel.clear_message()
+        panel.update_position(position)
+
+
 class TrackingDialog(tk.Toplevel):
     def __init__(self, app: "WT2App") -> None:
         super().__init__(app)
@@ -487,8 +562,6 @@ class AntennaPanel(ttk.Frame):
         self.cal_az_var = tk.StringVar(value="--")
         self.cal_el_var = tk.StringVar(value="--")
         self.fault_var = tk.StringVar(value="")
-        self.actual_az_var = tk.StringVar()
-        self.actual_el_var = tk.StringVar()
 
         initial_speed = config.gui_speed if config else 40
         initial_max_jog = config.limits.max_jog_seconds if config else 60.0
@@ -507,14 +580,8 @@ class AntennaPanel(ttk.Frame):
         self._label_pair(3, "Cal AZ", self.cal_az_var)
         self._label_pair(4, "Cal EL", self.cal_el_var)
 
-        ttk.Label(self, text="Actual AZ").grid(row=5, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(self, textvariable=self.actual_az_var, width=6).grid(row=5, column=1, sticky="w", pady=(8, 0))
-        ttk.Label(self, text="Actual EL").grid(row=6, column=0, sticky="w")
-        ttk.Entry(self, textvariable=self.actual_el_var, width=6).grid(row=6, column=1, sticky="w")
-        ttk.Button(self, text="Calibrate", command=self.calibrate).grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 8))
-
         control = ttk.Frame(self)
-        control.grid(row=8, column=0, columnspan=2, sticky="ew")
+        control.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         for col in range(3):
             control.columnconfigure(col, weight=1)
         self._hold_button(control, "AZ CCW", Direction.AZ_CCW).grid(row=0, column=0, sticky="ew")
@@ -522,9 +589,9 @@ class AntennaPanel(ttk.Frame):
         self._hold_button(control, "EL UP", Direction.EL_UP).grid(row=1, column=1, sticky="ew")
         self._hold_button(control, "EL DOWN", Direction.EL_DOWN).grid(row=2, column=1, sticky="ew")
 
-        ttk.Button(self, text="STOP", command=self.stop).grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(self, text="STOP", command=self.stop).grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(self, textvariable=self.fault_var, foreground="red", wraplength=260).grid(
-            row=10, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+            row=7, column=0, columnspan=2, sticky="ew", pady=(6, 0)
         )
 
     def _label_pair(self, row: int, label: str, variable: tk.StringVar) -> None:
@@ -552,8 +619,6 @@ class AntennaPanel(ttk.Frame):
         self.status_var.set("DISCONNECTED")
         self.fault_var.set("")
         self.clear_position_fields()
-        self.actual_az_var.set("")
-        self.actual_el_var.set("")
 
     def clear_position_fields(self) -> None:
         self.raw_az_var.set("--")
@@ -582,6 +647,10 @@ class AntennaPanel(ttk.Frame):
         self.fault_var.set(text)
         self.status_var.set("FAULT" if text else "CONNECTED")
 
+    def set_tracking_status(self, text: str) -> None:
+        if self.session and not self.fault_var.get():
+            self.status_var.set(text)
+
     def set_message(self, text: str) -> None:
         self.fault_var.set(text)
         if self.session:
@@ -596,27 +665,6 @@ class AntennaPanel(ttk.Frame):
         if not self.session:
             return
         self.app.run_worker(lambda: self.session.read_position(), self.finish_refresh, self.set_message)
-
-    def calibrate(self) -> None:
-        if not self.session:
-            return
-        try:
-            actual_az = float(self.actual_az_var.get())
-            actual_el = float(self.actual_el_var.get())
-        except ValueError:
-            self.set_message("Calibration requires numeric actual AZ and EL.")
-            return
-        if not (0.0 <= actual_az <= 360.0 and -90.0 <= actual_el <= 180.0):
-            self.set_message("Calibration AZ must be 0..360 and EL -90..180.")
-            return
-
-        def work() -> Position:
-            position = self.session.calibrate(actual_az, actual_el)
-            self.app.save_config("Calibration saved.")
-            self.session.update_oled("CAL")
-            return position
-
-        self.app.run_worker(work, self.finish_calibration, self.set_message)
 
     def commit_speed(self, _event: Optional[object] = None) -> bool:
         try:
@@ -677,12 +725,6 @@ class AntennaPanel(ttk.Frame):
         self.clear_message()
         self.update_position(position)
 
-    def finish_calibration(self, position: Position) -> None:
-        self.actual_az_var.set(f"{position.azimuth:0.2f}")
-        self.actual_el_var.set(f"{position.elevation:0.2f}")
-        self.clear_message()
-        self.update_position(position)
-
     def finish_jog(self, position: Position) -> None:
         self.jog_thread_active = False
         self.clear_message()
@@ -702,7 +744,7 @@ class WT2App(tk.Tk):
     def __init__(self, config_path: str) -> None:
         super().__init__()
         self.title("WT_2 Antenna Controller")
-        self.geometry("980x560")
+        self.geometry("840x500")
         self.config_path = config_path
         self.configs = load_configs(config_path)
         self.site = load_site_config(config_path)
@@ -715,24 +757,31 @@ class WT2App(tk.Tk):
         self.target_name_var = tk.StringVar(value="Target --")
         self.target_az_var = tk.StringVar(value="AZ --")
         self.target_el_var = tk.StringVar(value="EL --")
+        self.sun_ref_var = tk.StringVar(value="Sun AZ -- EL --")
+        self.moon_ref_var = tk.StringVar(value="Moon AZ -- EL --")
         self.source_status_var = tk.StringVar()
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        top = ttk.Frame(self, padding=8)
+        top = ttk.Frame(self, padding=(8, 8, 8, 2))
         top.pack(fill="x")
-        ttk.Button(top, text="Connect", command=self.connect_all).pack(side="left")
-        ttk.Button(top, text="Disconnect", command=self.disconnect_all).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Limits", command=self.open_limits).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Observer", command=self.open_observer).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Tracking", command=self.open_tracking).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Sources", command=self.open_sources).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Track Sun", command=lambda: self.start_tracking("sun")).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Track Moon", command=lambda: self.start_tracking("moon")).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Track Source", command=lambda: self.start_tracking("source")).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Stop Track", command=self.stop_sun_tracking).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="STOP ALL", command=self.stop_all).pack(side="right")
+        top_row_1 = ttk.Frame(top)
+        top_row_1.pack(fill="x")
+        top_row_2 = ttk.Frame(top)
+        top_row_2.pack(fill="x", pady=(4, 0))
+        ttk.Button(top_row_1, text="Connect", command=self.connect_all).pack(side="left")
+        ttk.Button(top_row_1, text="Disconnect", command=self.disconnect_all).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_1, text="Limits", command=self.open_limits).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_1, text="Observer", command=self.open_observer).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_1, text="Tracking", command=self.open_tracking).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_1, text="Sources", command=self.open_sources).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_1, text="Calibration", command=self.open_calibration).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_2, text="Track Sun", command=lambda: self.start_tracking("sun")).pack(side="left")
+        ttk.Button(top_row_2, text="Track Moon", command=lambda: self.start_tracking("moon")).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_2, text="Track Source", command=lambda: self.start_tracking("source")).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_2, text="Stop Track", command=self.stop_sun_tracking).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_2, text="STOP ALL", command=self.stop_all).pack(side="right")
 
         ttk.Label(self, textvariable=self.status_var, padding=(8, 2)).pack(fill="x")
         target_bar = ttk.Frame(self, padding=(8, 0, 8, 2))
@@ -741,6 +790,10 @@ class WT2App(tk.Tk):
         ttk.Label(target_bar, textvariable=self.target_az_var).pack(side="left", padx=(16, 0))
         ttk.Label(target_bar, textvariable=self.target_el_var).pack(side="left", padx=(16, 0))
         ttk.Label(target_bar, textvariable=self.source_status_var).pack(side="left", padx=(16, 0))
+        reference_bar = ttk.Frame(self, padding=(8, 0, 8, 2))
+        reference_bar.pack(fill="x")
+        ttk.Label(reference_bar, textvariable=self.sun_ref_var).pack(side="left")
+        ttk.Label(reference_bar, textvariable=self.moon_ref_var).pack(side="left", padx=(16, 0))
 
         body = ttk.Frame(self, padding=8)
         body.pack(fill="both", expand=True)
@@ -759,6 +812,7 @@ class WT2App(tk.Tk):
         self.refresh_source_status()
 
         self.after(100, self.process_events)
+        self.update_reference_positions()
         self.after(1500, self.periodic_refresh)
 
     def connect_all(self) -> None:
@@ -833,7 +887,7 @@ class WT2App(tk.Tk):
         self.tracking_stop_event.clear()
         self.tracking_active = True
         self.tracking_kind = kind
-        self.status_var.set(f"{self.kind_label(kind)} tracking started.")
+        self.status_var.set(f"Slewing to {self.kind_label(kind)}.")
         threading.Thread(target=lambda: self.tracking_loop(kind), daemon=True).start()
 
     def stop_sun_tracking(self) -> None:
@@ -847,6 +901,7 @@ class WT2App(tk.Tk):
             while not self.tracking_stop_event.is_set():
                 target = self.current_tracking_target(kind)
                 self.events.put(("ok", self.apply_target_position, target))
+                self.events.put(("ok", self.set_status, f"Slewing to {target.name}."))
                 self.slew_all_to_target(target, target.name[:8].upper())
                 self.events.put(("ok", self.finish_target_slew, target))
                 wait_until = time.monotonic() + max(0.1, self.site.track_interval_seconds)
@@ -944,6 +999,7 @@ class WT2App(tk.Tk):
 
             def worker() -> None:
                 try:
+                    self.events.put(("ok", panel.set_tracking_status, "SLEWING"))
                     position = session.guarded_slew_to(
                         target.azimuth,
                         target.elevation,
@@ -960,7 +1016,9 @@ class WT2App(tk.Tk):
                     )
                     session.update_oled(mode, target.azimuth, target.elevation)
                     self.events.put(("position", panel.update_position, position))
+                    self.events.put(("ok", panel.set_tracking_status, "TRACKING"))
                 except Exception as exc:
+                    self.events.put(("error", panel.set_fault, str(exc)))
                     with lock:
                         errors.append(f"{name}: {exc}")
 
@@ -994,7 +1052,7 @@ class WT2App(tk.Tk):
     def finish_target_slew(self, target: TargetPosition) -> None:
         self.apply_target_position(target)
         if not self.tracking_stop_event.is_set():
-            self.status_var.set(f"{target.name} target reached.")
+            self.status_var.set(f"Tracking {target.name}.")
 
     def kind_label(self, kind: str) -> str:
         if kind == "sun":
@@ -1023,6 +1081,12 @@ class WT2App(tk.Tk):
     def open_sources(self) -> None:
         SourcesDialog(self)
 
+    def open_calibration(self) -> None:
+        if not self.configs:
+            self.status_var.set("No antenna configs loaded.")
+            return
+        CalibrationDialog(self)
+
     def refresh_source_status(self) -> None:
         if self.site.selected_source and self.site.selected_source in self.sources:
             source = self.sources[self.site.selected_source]
@@ -1031,6 +1095,16 @@ class WT2App(tk.Tk):
             )
         else:
             self.source_status_var.set("Source none")
+
+    def update_reference_positions(self) -> None:
+        try:
+            sun = self.target_for_kind("sun")
+            moon = self.target_for_kind("moon")
+            self.sun_ref_var.set(f"Sun AZ {sun.azimuth:0.2f} EL {sun.elevation:0.2f}")
+            self.moon_ref_var.set(f"Moon AZ {moon.azimuth:0.2f} EL {moon.elevation:0.2f}")
+        except Exception as exc:
+            self.sun_ref_var.set(f"Reference error: {exc}")
+            self.moon_ref_var.set("")
 
     def save_site_settings(self, message: str) -> None:
         save_site_config(self.config_path, self.site)
@@ -1045,12 +1119,16 @@ class WT2App(tk.Tk):
         self.tracking_stop_event.set()
         for panel in self.panels.values():
             panel.stop_event.set()
+            if panel.session:
+                panel.status_var.set("CONNECTED")
         for session in self.sessions.values():
             self.run_worker(lambda s=session: s.stop_all(), lambda _result: None, self.set_status)
         self.status_var.set("Stop commands sent.")
 
     def periodic_refresh(self) -> None:
-        self.refresh_all()
+        if not self.tracking_active:
+            self.refresh_all()
+        self.update_reference_positions()
         self.after(1500, self.periodic_refresh)
 
     def save_config(self, message: str = "Settings saved.") -> None:

@@ -103,8 +103,9 @@ state so old readings are not mistaken for live encoder data.
 For each antenna:
 
 1. Point the antenna to a known physical position.
-2. Enter the actual AZ and EL in the antenna panel.
-3. Press `Calibrate`.
+2. Press `Calibration`.
+3. Enter the actual AZ and EL in the antenna tab.
+4. Press `Calibrate`.
 
 The GUI reads the raw encoder positions and stores offsets in `wt2.ini`:
 
@@ -195,12 +196,15 @@ WT_2 includes guarded target tracking:
 - `Track Moon` computes the current topocentric Moon AZ/EL and slews both connected antennas toward it.
 - `Track Source` tracks the selected RA/Dec source from the `Sources` dialog.
 - `Stop Track` stops tracking and sends stop commands.
+- Antenna status shows `SLEWING` while moving to the target and `TRACKING` once on target.
 - AZ and EL are allowed to slew concurrently on each antenna.
 - Observer latitude/longitude are edited with `Observer`.
 - Named RA/Dec radio sources are edited and selected with `Sources`.
 - `Interval`, AZ/EL tolerance, AZ/EL slow speed, AZ/EL slow deg, AZ/EL tracking speed, and `Max jog` are edited with `Tracking`.
 - The main screen shows one shared target AZ/EL; the OLED displays use the
   same shared target values.
+- Sun and Moon AZ/EL are shown continuously as reference positions, even when
+  they are not being tracked.
 
 All tracking uses the same calibrated positions, software limits, margins, jog
 speed, max-jog watchdog, encoder polling, and stop commands as manual movement.
