@@ -575,28 +575,34 @@ class AntennaPanel(ttk.Frame):
         ttk.Label(self, text=name.upper(), font=("TkDefaultFont", 13, "bold")).grid(row=0, column=0, sticky="w")
         ttk.Label(self, textvariable=self.status_var).grid(row=0, column=1, sticky="e")
 
-        self._label_pair(1, "Raw AZ", self.raw_az_var)
-        self._label_pair(2, "Raw EL", self.raw_el_var)
-        self._label_pair(3, "Cal AZ", self.cal_az_var)
-        self._label_pair(4, "Cal EL", self.cal_el_var)
+        position_frame = ttk.Frame(self)
+        position_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
+        for col in range(4):
+            position_frame.columnconfigure(col, weight=1)
+        self._position_cell(position_frame, 0, 0, "Raw AZ", self.raw_az_var)
+        self._position_cell(position_frame, 0, 2, "Raw EL", self.raw_el_var)
+        self._position_cell(position_frame, 1, 0, "Cal AZ", self.cal_az_var)
+        self._position_cell(position_frame, 1, 2, "Cal EL", self.cal_el_var)
 
-        control = ttk.Frame(self)
-        control.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        control = ttk.LabelFrame(self, text="Manual")
+        control.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         for col in range(3):
             control.columnconfigure(col, weight=1)
-        self._hold_button(control, "AZ CCW", Direction.AZ_CCW).grid(row=0, column=0, sticky="ew")
-        self._hold_button(control, "AZ CW", Direction.AZ_CW).grid(row=0, column=2, sticky="ew")
-        self._hold_button(control, "EL UP", Direction.EL_UP).grid(row=1, column=1, sticky="ew")
-        self._hold_button(control, "EL DOWN", Direction.EL_DOWN).grid(row=2, column=1, sticky="ew")
+        self._hold_button(control, "EL+", Direction.EL_UP).grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self._hold_button(control, "AZ-", Direction.AZ_CCW).grid(row=1, column=0, sticky="ew", padx=2, pady=2)
+        ttk.Button(control, text="STOP", command=self.stop).grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        self._hold_button(control, "AZ+", Direction.AZ_CW).grid(row=1, column=2, sticky="ew", padx=2, pady=2)
+        self._hold_button(control, "EL-", Direction.EL_DOWN).grid(row=2, column=1, sticky="ew", padx=2, pady=2)
 
-        ttk.Button(self, text="STOP", command=self.stop).grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(self, textvariable=self.fault_var, foreground="red", wraplength=260).grid(
-            row=7, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+            row=3, column=0, columnspan=2, sticky="ew", pady=(6, 0)
         )
 
-    def _label_pair(self, row: int, label: str, variable: tk.StringVar) -> None:
-        ttk.Label(self, text=label).grid(row=row, column=0, sticky="w")
-        ttk.Label(self, textvariable=variable, font=("TkDefaultFont", 11, "bold")).grid(row=row, column=1, sticky="e")
+    def _position_cell(self, parent: tk.Misc, row: int, column: int, label: str, variable: tk.StringVar) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w", padx=(0, 4))
+        ttk.Label(parent, textvariable=variable, font=("TkDefaultFont", 11, "bold")).grid(
+            row=row, column=column + 1, sticky="e", padx=(0, 8)
+        )
 
     def _hold_button(self, master: tk.Misc, text: str, direction: Direction) -> ttk.Button:
         button = ttk.Button(master, text=text)
@@ -897,12 +903,15 @@ class WT2App(tk.Tk):
         self.status_var.set("Tracking stopped.")
 
     def tracking_loop(self, kind: str) -> None:
+        acquired = False
         try:
             while not self.tracking_stop_event.is_set():
                 target = self.current_tracking_target(kind)
                 self.events.put(("ok", self.apply_target_position, target))
-                self.events.put(("ok", self.set_status, f"Slewing to {target.name}."))
-                self.slew_all_to_target(target, target.name[:8].upper())
+                if not acquired:
+                    self.events.put(("ok", self.set_status, f"Slewing to {target.name}."))
+                self.slew_all_to_target(target, target.name[:8].upper(), show_slewing=not acquired)
+                acquired = True
                 self.events.put(("ok", self.finish_target_slew, target))
                 wait_until = time.monotonic() + max(0.1, self.site.track_interval_seconds)
                 while not self.tracking_stop_event.is_set() and time.monotonic() < wait_until:
@@ -987,7 +996,7 @@ class WT2App(tk.Tk):
         self.target_az_var.set(f"AZ {target.azimuth:0.2f}")
         self.target_el_var.set(f"EL {target.elevation:0.2f}")
 
-    def slew_all_to_target(self, target: TargetPosition, mode: str) -> TargetPosition:
+    def slew_all_to_target(self, target: TargetPosition, mode: str, show_slewing: bool = True) -> TargetPosition:
         errors: list[str] = []
         threads: list[threading.Thread] = []
         lock = threading.Lock()
@@ -999,7 +1008,7 @@ class WT2App(tk.Tk):
 
             def worker() -> None:
                 try:
-                    self.events.put(("ok", panel.set_tracking_status, "SLEWING"))
+                    self.events.put(("ok", panel.set_tracking_status, "SLEWING" if show_slewing else "TRACKING"))
                     position = session.guarded_slew_to(
                         target.azimuth,
                         target.elevation,

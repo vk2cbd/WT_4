@@ -196,7 +196,9 @@ WT_2 includes guarded target tracking:
 - `Track Moon` computes the current topocentric Moon AZ/EL and slews both connected antennas toward it.
 - `Track Source` tracks the selected RA/Dec source from the `Sources` dialog.
 - `Stop Track` stops tracking and sends stop commands.
-- Antenna status shows `SLEWING` while moving to the target and `TRACKING` once on target.
+- Antenna status shows `SLEWING` during the initial gross move to a target and
+  `TRACKING` once on target. Later fine tracking corrections stay labelled
+  `TRACKING`.
 - AZ and EL are allowed to slew concurrently on each antenna.
 - Observer latitude/longitude are edited with `Observer`.
 - Named RA/Dec radio sources are edited and selected with `Sources`.
