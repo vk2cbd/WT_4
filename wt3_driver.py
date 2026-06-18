@@ -142,6 +142,8 @@ class AntennaConfig:
     gui_speed: int = 40
     az_track_speed: int = 40
     el_track_speed: int = 40
+    park_az: float = 355.0
+    park_el: float = 80.0
     calibration: Calibration = None
     limits: SafetyLimits = None
 

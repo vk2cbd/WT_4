@@ -191,6 +191,9 @@ axis when this time expires.
 The Limits dialog validates numeric ranges before saving. New limits take effect
 immediately for connected antennas and are written to `wt3.ini`.
 
+Elevation limits and elevation calibration values are constrained to 0..90
+degrees throughout WT3.
+
 Azimuth supports wrap-around. For example:
 
 ```ini
@@ -215,6 +218,23 @@ inside the allowed arc, even when that is not the shortest geometric rotation.
 
 Because there are no physical limit switches, loss of encoder replies or any
 protocol error is treated as a fault and movement stops.
+
+## Park
+
+Press `Park` to slew each connected antenna to its configured park position,
+stop motion, and disconnect from the controllers after both antennas have
+parked successfully. If any antenna faults or `STOP ALL` is pressed during
+parking, WT3 stops movement and stays connected so the fault remains visible.
+
+Park positions are edited in the `Park` tab inside `Limits`:
+
+```ini
+park_az = 355.000
+park_el = 80.000
+```
+
+Park EL must be 0..90 degrees and the park position must also be inside that
+antenna's configured software limits.
 
 ## Target Tracking
 

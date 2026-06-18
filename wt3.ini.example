@@ -17,6 +17,8 @@ open_delay = 5
 gui_speed = 40
 az_track_speed = 40
 el_track_speed = 40
+park_az = 355.000
+park_el = 80.000
 
 # Calibration offsets are written by the GUI calibration button.
 az_offset = 0.000000
@@ -55,6 +57,8 @@ open_delay = 5
 gui_speed = 40
 az_track_speed = 40
 el_track_speed = 40
+park_az = 355.000
+park_el = 80.000
 az_offset = 0.000000
 el_offset = 0.000000
 az_min = 270.000

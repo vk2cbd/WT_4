@@ -133,6 +133,8 @@ def load_configs(path: Union[str, Path]) -> dict[str, AntennaConfig]:
             gui_speed=parser.getint(section, "gui_speed", fallback=40),
             az_track_speed=parser.getint(section, "az_track_speed", fallback=parser.getint(section, "gui_speed", fallback=40)),
             el_track_speed=parser.getint(section, "el_track_speed", fallback=parser.getint(section, "gui_speed", fallback=40)),
+            park_az=parser.getfloat(section, "park_az", fallback=355.0),
+            park_el=parser.getfloat(section, "park_el", fallback=80.0),
             calibration=Calibration(
                 az_offset=parser.getfloat(section, "az_offset", fallback=0.0),
                 el_offset=parser.getfloat(section, "el_offset", fallback=0.0),
@@ -170,6 +172,8 @@ def save_configs(path: Union[str, Path], configs: dict[str, AntennaConfig]) -> N
             "gui_speed": str(config.gui_speed),
             "az_track_speed": str(config.az_track_speed),
             "el_track_speed": str(config.el_track_speed),
+            "park_az": f"{config.park_az:.3f}",
+            "park_el": f"{config.park_el:.3f}",
             "az_offset": f"{config.calibration.az_offset:.6f}",
             "el_offset": f"{config.calibration.el_offset:.6f}",
             "az_min": f"{config.limits.az_min:.3f}",

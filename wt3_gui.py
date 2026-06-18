@@ -36,6 +36,7 @@ class LimitsDialog(tk.Toplevel):
         self.transient(app)
         self.grab_set()
         self.entries: dict[str, dict[str, tk.StringVar]] = {}
+        self.park_entries: dict[str, dict[str, tk.StringVar]] = {}
 
         tabs = ttk.Notebook(self)
         tabs.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
@@ -44,6 +45,10 @@ class LimitsDialog(tk.Toplevel):
             frame = ttk.Frame(tabs, padding=10)
             tabs.add(frame, text=name)
             self.entries[name] = self._build_limit_fields(frame, config)
+
+        park_frame = ttk.Frame(tabs, padding=10)
+        tabs.add(park_frame, text="Park")
+        self._build_park_fields(park_frame)
 
         buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         buttons.grid(row=1, column=0, sticky="ew")
@@ -77,12 +82,30 @@ class LimitsDialog(tk.Toplevel):
             ttk.Entry(frame, textvariable=values[key], width=9).grid(row=row, column=1, sticky="w", pady=2)
         return values
 
+    def _build_park_fields(self, frame: ttk.Frame) -> None:
+        ttk.Label(frame, text="Antenna").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(frame, text="Park AZ").grid(row=0, column=1, sticky="w", pady=(0, 4))
+        ttk.Label(frame, text="Park EL").grid(row=0, column=2, sticky="w", pady=(0, 4))
+        for row, (name, config) in enumerate(self.app.configs.items(), start=1):
+            values = {
+                "park_az": tk.StringVar(value=f"{config.park_az:0.0f}"),
+                "park_el": tk.StringVar(value=f"{config.park_el:0.0f}"),
+            }
+            self.park_entries[name] = values
+            ttk.Label(frame, text=name).grid(row=row, column=0, sticky="w", pady=2)
+            ttk.Entry(frame, textvariable=values["park_az"], width=9).grid(row=row, column=1, sticky="w", padx=(8, 0), pady=2)
+            ttk.Entry(frame, textvariable=values["park_el"], width=9).grid(row=row, column=2, sticky="w", padx=(8, 0), pady=2)
+
     def save(self) -> None:
         parsed: dict[str, dict[str, float]] = {}
+        parsed_park: dict[str, dict[str, float]] = {}
         try:
             for name, values in self.entries.items():
                 parsed[name] = {key: float(value.get()) for key, value in values.items()}
                 self._validate_limits(name, parsed[name])
+            for name, values in self.park_entries.items():
+                parsed_park[name] = {key: float(value.get()) for key, value in values.items()}
+                self._validate_park(name, parsed_park[name], parsed[name])
         except ValueError:
             messagebox.showerror("Invalid Limits", "All limit values must be numeric.", parent=self)
             return
@@ -100,10 +123,13 @@ class LimitsDialog(tk.Toplevel):
             limits.el_margin = values["el_margin"]
             limits.max_jog_seconds = values["max_jog_seconds"]
             limits.poll_interval = values["poll_interval"]
+            self.app.configs[name].park_az = parsed_park[name]["park_az"]
+            self.app.configs[name].park_el = parsed_park[name]["park_el"]
             if name in self.app.panels:
                 self.app.panels[name].sync_config_settings()
 
         self._format_fields(parsed)
+        self._format_park_fields(parsed_park)
         self.app.save_config("Limits saved.")
         self.destroy()
 
@@ -122,19 +148,52 @@ class LimitsDialog(tk.Toplevel):
             for key, value in values.items():
                 self.entries[name][key].set(formats[key].format(value))
 
+    def _format_park_fields(self, parsed: dict[str, dict[str, float]]) -> None:
+        for name, values in parsed.items():
+            self.park_entries[name]["park_az"].set(f"{values['park_az']:0.0f}")
+            self.park_entries[name]["park_el"].set(f"{values['park_el']:0.0f}")
+
     def _validate_limits(self, name: str, values: dict[str, float]) -> None:
         if not (0.0 <= values["az_min"] <= 360.0 and 0.0 <= values["az_max"] <= 360.0):
             raise RuntimeError(f"{name}: AZ limits must be 0..360 degrees.")
         if values["el_min"] >= values["el_max"]:
             raise RuntimeError(f"{name}: EL min must be less than EL max.")
-        if not (-90.0 <= values["el_min"] <= 180.0 and -90.0 <= values["el_max"] <= 180.0):
-            raise RuntimeError(f"{name}: EL limits must be -90..180 degrees.")
+        if not (0.0 <= values["el_min"] <= 90.0 and 0.0 <= values["el_max"] <= 90.0):
+            raise RuntimeError(f"{name}: EL limits must be 0..90 degrees.")
         if values["az_margin"] < 0.0 or values["el_margin"] < 0.0:
             raise RuntimeError(f"{name}: margins cannot be negative.")
         if not (1.0 <= values["max_jog_seconds"] <= 600.0):
             raise RuntimeError(f"{name}: max jog must be 1..600 seconds.")
         if not (0.05 <= values["poll_interval"] <= 5.0):
             raise RuntimeError(f"{name}: poll interval must be 0.05..5.0 seconds.")
+
+    def _validate_park(self, name: str, values: dict[str, float], limits: dict[str, float]) -> None:
+        if not (0.0 <= values["park_az"] <= 360.0):
+            raise RuntimeError(f"{name}: park AZ must be 0..360 degrees.")
+        if not (0.0 <= values["park_el"] <= 90.0):
+            raise RuntimeError(f"{name}: park EL must be 0..90 degrees.")
+        test_limits = self.app.configs[name].limits
+        old_values = (
+            test_limits.az_min,
+            test_limits.az_max,
+            test_limits.el_min,
+            test_limits.el_max,
+        )
+        try:
+            test_limits.az_min = limits["az_min"]
+            test_limits.az_max = limits["az_max"]
+            test_limits.el_min = limits["el_min"]
+            test_limits.el_max = limits["el_max"]
+            test_limits.assert_position_allowed(values["park_az"], values["park_el"])
+        except Exception as exc:
+            raise RuntimeError(f"{name}: park position is outside limits: {exc}") from exc
+        finally:
+            (
+                test_limits.az_min,
+                test_limits.az_max,
+                test_limits.el_min,
+                test_limits.el_max,
+            ) = old_values
 
 
 class ObserverDialog(tk.Toplevel):
@@ -399,8 +458,8 @@ class CalibrationDialog(tk.Toplevel):
         except ValueError:
             messagebox.showerror("Calibration", "Actual AZ and EL must be numeric.", parent=self)
             return
-        if not (0.0 <= actual_az <= 360.0 and -90.0 <= actual_el <= 180.0):
-            messagebox.showerror("Calibration", "Calibration AZ must be 0..360 and EL -90..180.", parent=self)
+        if not (0.0 <= actual_az <= 360.0 and 0.0 <= actual_el <= 90.0):
+            messagebox.showerror("Calibration", "Calibration AZ must be 0..360 and EL 0..90.", parent=self)
             return
 
         def work() -> Position:
@@ -535,8 +594,8 @@ class EncodersDialog(tk.Toplevel):
         if axis == Axis.AZIMUTH and not (0.0 <= position <= 360.0):
             self.show_error("AZ position must be 0..360 degrees.")
             return
-        if axis == Axis.ELEVATION and not (0.0 <= position <= 180.0):
-            self.show_error("EL Arduino position must be 0..180 degrees.")
+        if axis == Axis.ELEVATION and not (0.0 <= position <= 90.0):
+            self.show_error("EL Arduino position must be 0..90 degrees.")
             return
         if not messagebox.askyesno(
             "Set Encoder Position",
@@ -953,7 +1012,9 @@ class WT3App(tk.Tk):
         self.sessions: dict[str, SafeAntenna] = {}
         self.events: queue.Queue[tuple[str, object, object]] = queue.Queue()
         self.tracking_stop_event = threading.Event()
+        self.park_stop_event = threading.Event()
         self.tracking_active = False
+        self.parking_active = False
         self.tracking_kind = ""
         self.target_name_var = tk.StringVar(value="Target --")
         self.target_az_var = tk.StringVar(value="AZ --")
@@ -986,6 +1047,7 @@ class WT3App(tk.Tk):
         ttk.Button(top_row_2, text="Track Moon", command=lambda: self.start_tracking("moon")).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_2, text="Track Source", command=lambda: self.start_tracking("source")).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_2, text="Stop Track", command=self.stop_sun_tracking).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_2, text="Park", command=self.park_all).pack(side="left", padx=(6, 0))
 
         target_bar = ttk.Frame(self, padding=(8, 0, 8, 2))
         target_bar.pack(fill="x")
@@ -1044,6 +1106,9 @@ class WT3App(tk.Tk):
         self.status_var.set(f"Connected {connected}/{total} antennas. Guarded manual mode ready.")
 
     def disconnect_all(self) -> None:
+        if self.parking_active:
+            self.status_var.set("Parking in progress.")
+            return
         if not self.sessions:
             self.status_var.set("Already disconnected.")
             return
@@ -1100,6 +1165,114 @@ class WT3App(tk.Tk):
         self.tracking_active = False
         self.stop_all()
         self.status_var.set("Tracking stopped.")
+
+    def park_all(self) -> None:
+        if self.parking_active:
+            self.status_var.set("Parking already in progress.")
+            return
+        if not self.sessions:
+            self.status_var.set("Connect antennas before parking.")
+            return
+        try:
+            for name, session in self.sessions.items():
+                session.config.limits.assert_position_allowed(session.config.park_az, session.config.park_el)
+        except Exception as exc:
+            self.status_var.set(f"Park position invalid: {exc}")
+            return
+
+        self.tracking_stop_event.set()
+        self.tracking_active = False
+        self.park_stop_event.clear()
+        self.parking_active = True
+        self.status_var.set("Parking antennas...")
+        threading.Thread(target=self.park_worker, daemon=True).start()
+
+    def park_worker(self) -> None:
+        sessions = list(self.sessions.items())
+        errors: list[str] = []
+        lock = threading.Lock()
+
+        def make_worker(name: str, session: SafeAntenna):
+            panel = self.panels.get(name)
+
+            def progress(position: Position) -> None:
+                if panel:
+                    self.events.put(("position", panel.update_position, position))
+                session.update_oled_position(session.config.park_az, session.config.park_el)
+
+            def worker() -> None:
+                try:
+                    if panel:
+                        self.events.put(("ok", panel.set_tracking_status, "PARKING"))
+                    position = session.guarded_slew_to(
+                        session.config.park_az,
+                        session.config.park_el,
+                        session.config.az_track_speed,
+                        session.config.el_track_speed,
+                        self.park_stop_event,
+                        self.az_tracking_stop_tolerance(),
+                        self.el_tracking_stop_tolerance(),
+                        self.site.az_slow_speed,
+                        self.site.el_slow_speed,
+                        self.site.az_slow_threshold_degrees,
+                        self.site.el_slow_threshold_degrees,
+                        progress,
+                    )
+                    if self.park_stop_event.is_set():
+                        raise RuntimeError("Park cancelled.")
+                    session.update_oled("PARK", session.config.park_az, session.config.park_el)
+                    if panel:
+                        self.events.put(("position", panel.update_position, position))
+                        self.events.put(("ok", panel.set_tracking_status, "PARKED"))
+                except Exception as exc:
+                    if panel:
+                        self.events.put(("error", panel.set_fault, str(exc)))
+                    with lock:
+                        errors.append(f"{name}: {exc}")
+
+            return worker
+
+        threads = [threading.Thread(target=make_worker(name, session), daemon=True) for name, session in sessions]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        if errors:
+            for _name, session in sessions:
+                try:
+                    session.stop_all()
+                except Exception:
+                    pass
+            self.events.put(("error", self.finish_park_fault, "; ".join(errors)))
+            return
+
+        closed_names: list[str] = []
+        for name, session in sessions:
+            try:
+                session.close()
+                closed_names.append(name)
+            except Exception as exc:
+                errors.append(f"{name}: disconnect failed after park: {exc}")
+        if errors:
+            self.events.put(("error", self.finish_park_fault, "; ".join(errors)))
+            return
+        self.events.put(("ok", self.finish_park_success, closed_names))
+
+    def finish_park_success(self, names: list[str]) -> None:
+        for name in names:
+            self.detach_session(name)
+        self.parking_active = False
+        self.park_stop_event.clear()
+        self.status_var.set("Parked and disconnected.")
+
+    def finish_park_fault(self, message: str) -> None:
+        self.parking_active = False
+        self.park_stop_event.clear()
+        for panel in self.panels.values():
+            if panel.session and panel.status_var.get() == "PARKING":
+                panel.status_var.set("CONNECTED")
+        self.status_var.set(f"Park fault: {message}")
 
     def tracking_loop(self, kind: str) -> None:
         acquired = False
@@ -1341,6 +1514,7 @@ class WT3App(tk.Tk):
 
     def stop_all(self) -> None:
         self.tracking_stop_event.set()
+        self.park_stop_event.set()
         for panel in self.panels.values():
             panel.stop_event.set()
             if panel.session:
@@ -1350,7 +1524,7 @@ class WT3App(tk.Tk):
         self.status_var.set("Stop commands sent.")
 
     def periodic_refresh(self) -> None:
-        if not self.tracking_active:
+        if not self.tracking_active and not self.parking_active:
             self.refresh_all()
         self.update_reference_positions()
         self.after(1500, self.periodic_refresh)
