@@ -208,6 +208,11 @@ The GUI refuses a move if the current calibrated position is outside limits or
 too close to the relevant limit. While a jog is active, it polls the encoder and
 stops that axis if a safety check fails.
 
+Automatic slews are also limit-aware. If the configured azimuth range wraps
+around 0 degrees, for example `az_min = 270` and `az_max = 265`, WT3 treats
+265..270 as a forbidden dead-zone and chooses the slew direction that remains
+inside the allowed arc, even when that is not the shortest geometric rotation.
+
 Because there are no physical limit switches, loss of encoder replies or any
 protocol error is treated as a fault and movement stops.
 

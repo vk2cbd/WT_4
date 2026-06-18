@@ -73,6 +73,8 @@ class SafetyLimits:
 
     def is_az_allowed(self, azimuth: float) -> bool:
         azimuth = normalize_degrees(azimuth)
+        if self._az_full_circle():
+            return True
         if self.az_min <= self.az_max:
             return self.az_min <= azimuth <= self.az_max
         return azimuth >= self.az_min or azimuth <= self.az_max
@@ -94,6 +96,9 @@ class SafetyLimits:
         if direction == Direction.EL_DOWN and elevation <= self.el_min + self.el_margin:
             raise SafetyError(f"Elevation {elevation:0.2f} too close to lower limit {self.el_min:0.2f}")
 
+        if self._az_full_circle():
+            return
+
         azimuth = normalize_degrees(azimuth)
         if self.az_min <= self.az_max:
             if direction == Direction.AZ_CW and azimuth >= self.az_max - self.az_margin:
@@ -105,6 +110,27 @@ class SafetyLimits:
                 raise SafetyError(f"Azimuth {azimuth:0.2f} too close to CW wrap limit {self.az_max:0.2f}")
             if direction == Direction.AZ_CCW and azimuth >= self.az_min and azimuth <= self.az_min + self.az_margin:
                 raise SafetyError(f"Azimuth {azimuth:0.2f} too close to CCW wrap limit {self.az_min:0.2f}")
+
+    def azimuth_delta_to_target(self, current_azimuth: float, target_azimuth: float) -> float:
+        """Return signed AZ delta using only the configured allowed azimuth arc."""
+        current_azimuth = normalize_degrees(current_azimuth)
+        target_azimuth = normalize_degrees(target_azimuth)
+        if not self.is_az_allowed(current_azimuth):
+            raise SafetyError(f"Azimuth {current_azimuth:0.2f} outside limits {self.az_min:0.2f}..{self.az_max:0.2f}")
+        if not self.is_az_allowed(target_azimuth):
+            raise SafetyError(f"Target azimuth {target_azimuth:0.2f} outside limits {self.az_min:0.2f}..{self.az_max:0.2f}")
+        if self._az_full_circle():
+            return shortest_angle_delta(current_azimuth, target_azimuth)
+
+        start = normalize_degrees(self.az_min)
+        current_offset = clockwise_angle_delta(start, current_azimuth)
+        target_offset = clockwise_angle_delta(start, target_azimuth)
+        if target_offset >= current_offset:
+            return target_offset - current_offset
+        return -(current_offset - target_offset)
+
+    def _az_full_circle(self) -> bool:
+        return abs(self.az_max - self.az_min) >= 360.0
 
 
 @dataclass
@@ -492,7 +518,7 @@ class SafeAntenna:
         self.config.limits.assert_position_allowed(target_azimuth, target_elevation)
 
         pos = self.read_position()
-        az_error = shortest_angle_delta(pos.azimuth, target_azimuth)
+        az_error = self.config.limits.azimuth_delta_to_target(pos.azimuth, target_azimuth)
         el_error = target_elevation - pos.elevation
         active: dict[Axis, dict[str, object]] = {}
         if abs(az_error) > az_tolerance:
@@ -541,7 +567,11 @@ class SafeAntenna:
                         tolerance = state["tolerance"]
                         slow_threshold = state["slow_threshold"]
                         slow_speed = state["slow_speed"]
-                        error = shortest_angle_delta(pos.azimuth, target) if axis == Axis.AZIMUTH else target - pos.elevation
+                        error = (
+                            self.config.limits.azimuth_delta_to_target(pos.azimuth, target)
+                            if axis == Axis.AZIMUTH
+                            else target - pos.elevation
+                        )
                         previous_error = state["previous_error"]
                         if abs(error) <= tolerance or _crossed_target(previous_error, error):
                             self._stop_axis(axis)
@@ -621,6 +651,10 @@ def normalize_degrees(value: float) -> float:
 
 def shortest_angle_delta(raw: float, actual: float) -> float:
     return ((normalize_degrees(actual) - normalize_degrees(raw) + 540.0) % 360.0) - 180.0
+
+
+def clockwise_angle_delta(start: float, end: float) -> float:
+    return (normalize_degrees(end) - normalize_degrees(start)) % 360.0
 
 
 def _crossed_target(previous_error: float, current_error: float) -> bool:
