@@ -12,9 +12,18 @@ from wt2_driver import AntennaConfig, Calibration, SafetyLimits
 
 
 @dataclass
+class SourceConfig:
+    name: str
+    ra_hours: float = 0.0
+    dec_degrees: float = 0.0
+    flux_4800_mhz: float = 0.0
+
+
+@dataclass
 class SiteConfig:
     latitude: float = -32.724000
     longitude: float = 152.130167
+    selected_source: str = ""
     track_interval_seconds: float = 2.0
     az_track_tolerance_degrees: float = 0.10
     el_track_tolerance_degrees: float = 0.10
@@ -35,6 +44,7 @@ def load_site_config(path: Union[str, Path]) -> SiteConfig:
     return SiteConfig(
         latitude=parser.getfloat("site", "latitude", fallback=-32.724000),
         longitude=parser.getfloat("site", "longitude", fallback=152.130167),
+        selected_source=parser.get("site", "selected_source", fallback="").strip(),
         track_interval_seconds=parser.getfloat("site", "track_interval_seconds", fallback=2.0),
         az_track_tolerance_degrees=parser.getfloat("site", "az_track_tolerance_degrees", fallback=old_tolerance),
         el_track_tolerance_degrees=parser.getfloat("site", "el_track_tolerance_degrees", fallback=old_tolerance),
@@ -51,6 +61,51 @@ def save_site_config(path: Union[str, Path], site: SiteConfig) -> None:
     if path.exists():
         parser.read(path)
     parser["site"] = _site_section(site)
+    with path.open("w", encoding="utf-8") as handle:
+        parser.write(handle)
+
+
+def load_sources(path: Union[str, Path]) -> dict[str, SourceConfig]:
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    if not path.exists():
+        return _default_sources()
+    parser.read(path)
+
+    sources: dict[str, SourceConfig] = {}
+    for section in parser.sections():
+        if not section.startswith("source:"):
+            continue
+        name = section.split(":", 1)[1].strip()
+        if not name:
+            continue
+        sources[name] = SourceConfig(
+            name=name,
+            ra_hours=parser.getfloat(section, "ra_hours", fallback=0.0),
+            dec_degrees=parser.getfloat(section, "dec_degrees", fallback=0.0),
+            flux_4800_mhz=parser.getfloat(section, "flux_4800_mhz", fallback=0.0),
+        )
+    return sources or _default_sources()
+
+
+def save_sources(path: Union[str, Path], sources: dict[str, SourceConfig], selected_source: str) -> None:
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    if path.exists():
+        parser.read(path)
+    if not parser.has_section("site"):
+        parser["site"] = _site_section(SiteConfig(selected_source=selected_source))
+    else:
+        parser["site"]["selected_source"] = selected_source
+    for section in list(parser.sections()):
+        if section.startswith("source:"):
+            parser.remove_section(section)
+    for name, source in sources.items():
+        parser[f"source:{name}"] = {
+            "ra_hours": f"{source.ra_hours:.6f}",
+            "dec_degrees": f"{source.dec_degrees:.6f}",
+            "flux_4800_mhz": f"{source.flux_4800_mhz:.3f}",
+        }
     with path.open("w", encoding="utf-8") as handle:
         parser.write(handle)
 
@@ -134,6 +189,7 @@ def _site_section(site: SiteConfig) -> dict[str, str]:
     return {
         "latitude": f"{site.latitude:.6f}",
         "longitude": f"{site.longitude:.6f}",
+        "selected_source": site.selected_source,
         "track_interval_seconds": f"{site.track_interval_seconds:.1f}",
         "az_track_tolerance_degrees": f"{site.az_track_tolerance_degrees:.2f}",
         "el_track_tolerance_degrees": f"{site.el_track_tolerance_degrees:.2f}",
@@ -141,4 +197,12 @@ def _site_section(site: SiteConfig) -> dict[str, str]:
         "el_slow_speed": str(max(0, min(100, int(site.el_slow_speed)))),
         "az_slow_threshold_degrees": f"{site.az_slow_threshold_degrees:.1f}",
         "el_slow_threshold_degrees": f"{site.el_slow_threshold_degrees:.1f}",
+    }
+
+
+def _default_sources() -> dict[str, SourceConfig]:
+    return {
+        "Virgo A": SourceConfig("Virgo A", ra_hours=12.5137, dec_degrees=12.3911, flux_4800_mhz=70.0),
+        "Centaurus A": SourceConfig("Centaurus A", ra_hours=13.4241, dec_degrees=-43.0191, flux_4800_mhz=650.0),
+        "Orion A": SourceConfig("Orion A", ra_hours=5.5881, dec_degrees=-5.3911, flux_4800_mhz=400.0),
     }

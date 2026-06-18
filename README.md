@@ -47,6 +47,7 @@ The observer site and tracking settings are edited from the `Observer` and
 [site]
 latitude = -32.724000
 longitude = 152.130167
+selected_source = Virgo A
 track_interval_seconds = 2.0
 az_track_tolerance_degrees = 0.10
 el_track_tolerance_degrees = 0.10
@@ -54,6 +55,16 @@ az_slow_speed = 20
 el_slow_speed = 20
 az_slow_threshold_degrees = 3.0
 el_slow_threshold_degrees = 3.0
+```
+
+User radio sources are edited from the `Sources` button and saved as config
+sections:
+
+```ini
+[source:Virgo A]
+ra_hours = 12.513700
+dec_degrees = 12.391100
+flux_4800_mhz = 70.000
 ```
 
 Use stable device paths if available:
@@ -176,21 +187,24 @@ stops that axis if a safety check fails.
 Because there are no physical limit switches, loss of encoder replies or any
 protocol error is treated as a fault and movement stops.
 
-## Sun Tracking
+## Target Tracking
 
-WT_2 includes a first-pass Sun tracking mode:
+WT_2 includes guarded target tracking:
 
 - `Track Sun` computes the current Sun AZ/EL and slews both connected antennas toward it.
+- `Track Moon` computes the current topocentric Moon AZ/EL and slews both connected antennas toward it.
+- `Track Source` tracks the selected RA/Dec source from the `Sources` dialog.
 - `Stop Track` stops tracking and sends stop commands.
 - AZ and EL are allowed to slew concurrently on each antenna.
 - Observer latitude/longitude are edited with `Observer`.
+- Named RA/Dec radio sources are edited and selected with `Sources`.
 - `Interval`, AZ/EL tolerance, AZ/EL slow speed, AZ/EL slow deg, AZ/EL tracking speed, and `Max jog` are edited with `Tracking`.
-- The main screen shows one shared Sun AZ/EL target; the OLED displays use the
+- The main screen shows one shared target AZ/EL; the OLED displays use the
   same shared target values.
 
-Sun tracking uses the same calibrated positions, software limits, margins, jog
+All tracking uses the same calibrated positions, software limits, margins, jog
 speed, max-jog watchdog, encoder polling, and stop commands as manual movement.
-If the Sun target is outside the configured safe limits, WT_2 stops instead of
+If the target is outside the configured safe limits, WT_2 stops instead of
 moving.
 
 Each antenna has separate AZ and EL tracking speeds:
@@ -220,11 +234,16 @@ than the matching antenna tracking speed.
 
 `Interval` is limited to 0.1..10.0 seconds in 0.1 second steps. Each axis
 tolerance is limited to +/-0.01..0.20 degrees in 0.01 degree steps. A negative
-axis tolerance leads the Sun on that axis by that amount and tracks to that led
+axis tolerance leads the target on that axis by that amount and tracks to that led
 target with a 0.01 degree stopping tolerance.
 
-Use low speed for the first tests and confirm the displayed Sun AZ/EL is
+Use low speed for the first tests and confirm the displayed target AZ/EL is
 reasonable before allowing larger slews.
+
+Moon tracking uses an internal lunar model with topocentric parallax correction,
+so the Raspberry Pi does not need an internet connection or downloaded
+ephemeris files. RA/Dec source tracking uses local sidereal time from the
+observer longitude.
 
 ## OLED Display
 
@@ -247,5 +266,6 @@ checked without relying only on the Raspberry Pi screen.
 
 ## Not Yet Included
 
-WT_2 does not yet include Moon, RA/Dec, catalogue, or full astronomical schedule
-tracking. Those should come after Sun tracking is proven on both antennas.
+WT_2 does not yet include full astronomical schedule tracking or automatic scan
+patterns. Those should come after guarded target tracking is proven on both
+antennas.

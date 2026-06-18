@@ -12,9 +12,19 @@ from datetime import datetime, timedelta, timezone
 from tkinter import messagebox, ttk
 from typing import Optional
 
-from wt2_config import SiteConfig, load_configs, load_site_config, save_configs, save_site_config
+from wt2_astro import TargetPosition, moon_position, source_position
+from wt2_config import (
+    SiteConfig,
+    SourceConfig,
+    load_configs,
+    load_site_config,
+    load_sources,
+    save_configs,
+    save_site_config,
+    save_sources,
+)
 from wt2_driver import AntennaConfig, Direction, Position, SafeAntenna, shortest_angle_delta
-from wt2_solar import SunPosition, sun_position
+from wt2_solar import sun_position
 
 
 class LimitsDialog(tk.Toplevel):
@@ -156,6 +166,7 @@ class ObserverDialog(tk.Toplevel):
             site = SiteConfig(
                 latitude=float(self.latitude_var.get()),
                 longitude=float(self.longitude_var.get()),
+                selected_source=self.app.site.selected_source,
                 track_interval_seconds=self.app.site.track_interval_seconds,
                 az_track_tolerance_degrees=self.app.site.az_track_tolerance_degrees,
                 el_track_tolerance_degrees=self.app.site.el_track_tolerance_degrees,
@@ -174,6 +185,134 @@ class ObserverDialog(tk.Toplevel):
         self.app.site = site
         self.app.save_site_settings("Observer saved.")
         self.destroy()
+
+
+class SourcesDialog(tk.Toplevel):
+    def __init__(self, app: "WT2App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("Sources")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        self.sources = {name: SourceConfig(source.name, source.ra_hours, source.dec_degrees, source.flux_4800_mhz) for name, source in app.sources.items()}
+        self.name_var = tk.StringVar()
+        self.ra_var = tk.StringVar()
+        self.dec_var = tk.StringVar()
+        self.flux_var = tk.StringVar()
+
+        body = ttk.Frame(self, padding=10)
+        body.grid(row=0, column=0, sticky="nsew")
+        self.tree = ttk.Treeview(body, columns=("ra", "dec", "flux"), show="headings", height=7)
+        self.tree.heading("ra", text="RA h")
+        self.tree.heading("dec", text="Dec deg")
+        self.tree.heading("flux", text="4800 MHz")
+        self.tree.column("ra", width=80, anchor="e")
+        self.tree.column("dec", width=80, anchor="e")
+        self.tree.column("flux", width=90, anchor="e")
+        self.tree.grid(row=0, column=0, columnspan=4, sticky="nsew", pady=(0, 8))
+        self.tree.bind("<<TreeviewSelect>>", self.load_selected)
+
+        fields = ttk.Frame(body)
+        fields.grid(row=1, column=0, columnspan=4, sticky="ew")
+        self._field(fields, "Name", self.name_var, 0, 16)
+        self._field(fields, "RA h", self.ra_var, 1, 10)
+        self._field(fields, "Dec deg", self.dec_var, 2, 10)
+        self._field(fields, "4800 MHz flux", self.flux_var, 3, 10)
+
+        ttk.Button(body, text="Add/Update", command=self.add_update).grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(body, text="Remove", command=self.remove).grid(row=2, column=1, sticky="ew", pady=(8, 0), padx=(6, 0))
+        ttk.Button(body, text="Select", command=self.select_source).grid(row=2, column=2, sticky="ew", pady=(8, 0), padx=(6, 0))
+        ttk.Button(body, text="Close", command=self.close).grid(row=2, column=3, sticky="ew", pady=(8, 0), padx=(6, 0))
+        self.refresh_tree()
+
+    def _field(self, parent: ttk.Frame, label: str, variable: tk.StringVar, row: int, width: int) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Entry(parent, textvariable=variable, width=width).grid(row=row, column=1, sticky="w", pady=2)
+
+    def refresh_tree(self) -> None:
+        self.tree.delete(*self.tree.get_children())
+        for name in sorted(self.sources):
+            source = self.sources[name]
+            self.tree.insert("", "end", iid=name, values=(f"{source.ra_hours:0.6f}", f"{source.dec_degrees:0.4f}", f"{source.flux_4800_mhz:0.1f}"))
+        if self.app.site.selected_source in self.sources:
+            self.tree.selection_set(self.app.site.selected_source)
+            self.tree.focus(self.app.site.selected_source)
+
+    def load_selected(self, _event: Optional[object] = None) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            return
+        source = self.sources[selection[0]]
+        self.name_var.set(source.name)
+        self.ra_var.set(f"{source.ra_hours:0.6f}")
+        self.dec_var.set(f"{source.dec_degrees:0.4f}")
+        self.flux_var.set(f"{source.flux_4800_mhz:0.1f}")
+
+    def add_update(self) -> None:
+        try:
+            name = self.name_var.get().strip()
+            if not name:
+                raise RuntimeError("Source name is required.")
+            source = SourceConfig(
+                name=name,
+                ra_hours=float(self.ra_var.get()),
+                dec_degrees=float(self.dec_var.get()),
+                flux_4800_mhz=float(self.flux_var.get()),
+            )
+            self.validate_source(source)
+        except ValueError:
+            messagebox.showerror("Invalid Source", "RA, Dec, and flux must be numeric.", parent=self)
+            return
+        except RuntimeError as exc:
+            messagebox.showerror("Invalid Source", str(exc), parent=self)
+            return
+        old_selection = self.tree.selection()
+        if old_selection and old_selection[0] != source.name:
+            self.sources.pop(old_selection[0], None)
+        self.sources[source.name] = source
+        self.refresh_tree()
+        self.tree.selection_set(source.name)
+        self.tree.focus(source.name)
+
+    def remove(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            return
+        self.sources.pop(selection[0], None)
+        if self.app.site.selected_source == selection[0]:
+            self.app.site.selected_source = ""
+        self.name_var.set("")
+        self.ra_var.set("")
+        self.dec_var.set("")
+        self.flux_var.set("")
+        self.refresh_tree()
+
+    def select_source(self) -> None:
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showerror("No Source", "Select a source first.", parent=self)
+            return
+        self.app.site.selected_source = selection[0]
+        self.save_to_app(f"Selected source {selection[0]}.")
+
+    def close(self) -> None:
+        self.save_to_app("Sources saved.")
+        self.destroy()
+
+    def save_to_app(self, message: str) -> None:
+        self.app.sources = self.sources
+        save_sources(self.app.config_path, self.app.sources, self.app.site.selected_source)
+        self.app.save_site_settings(message)
+        self.app.refresh_source_status()
+
+    def validate_source(self, source: SourceConfig) -> None:
+        if not (0.0 <= source.ra_hours < 24.0):
+            raise RuntimeError("RA must be 0.0 <= RA < 24.0 hours.")
+        if not (-90.0 <= source.dec_degrees <= 90.0):
+            raise RuntimeError("Dec must be -90..90 degrees.")
+        if source.flux_4800_mhz < 0.0:
+            raise RuntimeError("Flux cannot be negative.")
 
 
 class TrackingDialog(tk.Toplevel):
@@ -567,12 +706,16 @@ class WT2App(tk.Tk):
         self.config_path = config_path
         self.configs = load_configs(config_path)
         self.site = load_site_config(config_path)
+        self.sources = load_sources(config_path)
         self.sessions: dict[str, SafeAntenna] = {}
         self.events: queue.Queue[tuple[str, object, object]] = queue.Queue()
         self.tracking_stop_event = threading.Event()
         self.tracking_active = False
-        self.sun_az_var = tk.StringVar(value="Sun AZ --")
-        self.sun_el_var = tk.StringVar(value="Sun EL --")
+        self.tracking_kind = ""
+        self.target_name_var = tk.StringVar(value="Target --")
+        self.target_az_var = tk.StringVar(value="AZ --")
+        self.target_el_var = tk.StringVar(value="EL --")
+        self.source_status_var = tk.StringVar()
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -584,15 +727,20 @@ class WT2App(tk.Tk):
         ttk.Button(top, text="Limits", command=self.open_limits).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Observer", command=self.open_observer).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Tracking", command=self.open_tracking).pack(side="left", padx=(6, 0))
-        ttk.Button(top, text="Track Sun", command=self.start_sun_tracking).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Sources", command=self.open_sources).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Track Sun", command=lambda: self.start_tracking("sun")).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Track Moon", command=lambda: self.start_tracking("moon")).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Track Source", command=lambda: self.start_tracking("source")).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="Stop Track", command=self.stop_sun_tracking).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="STOP ALL", command=self.stop_all).pack(side="right")
 
         ttk.Label(self, textvariable=self.status_var, padding=(8, 2)).pack(fill="x")
         target_bar = ttk.Frame(self, padding=(8, 0, 8, 2))
         target_bar.pack(fill="x")
-        ttk.Label(target_bar, textvariable=self.sun_az_var).pack(side="left")
-        ttk.Label(target_bar, textvariable=self.sun_el_var).pack(side="left", padx=(16, 0))
+        ttk.Label(target_bar, textvariable=self.target_name_var).pack(side="left")
+        ttk.Label(target_bar, textvariable=self.target_az_var).pack(side="left", padx=(16, 0))
+        ttk.Label(target_bar, textvariable=self.target_el_var).pack(side="left", padx=(16, 0))
+        ttk.Label(target_bar, textvariable=self.source_status_var).pack(side="left", padx=(16, 0))
 
         body = ttk.Frame(self, padding=8)
         body.pack(fill="both", expand=True)
@@ -608,6 +756,7 @@ class WT2App(tk.Tk):
 
         if not self.configs:
             self.status_var.set(f"No antennas found in {config_path}. Copy wt2.ini.example to wt2.ini.")
+        self.refresh_source_status()
 
         self.after(100, self.process_events)
         self.after(1500, self.periodic_refresh)
@@ -668,36 +817,38 @@ class WT2App(tk.Tk):
         for session in self.sessions.values():
             self.run_worker(lambda s=session: s.update_oled("MANUAL"), lambda _result: None, self.set_status)
 
-    def start_sun_tracking(self) -> None:
+    def start_tracking(self, kind: str) -> None:
         if self.tracking_active:
-            self.status_var.set("Sun tracking already active.")
+            self.status_var.set("Tracking already active.")
             return
         if not self.sessions:
-            self.status_var.set("Connect antennas before Sun tracking.")
+            self.status_var.set("Connect antennas before tracking.")
             return
         try:
             self.validate_site(self.site)
+            self.target_for_kind(kind)
         except RuntimeError as exc:
-            self.status_var.set(f"{exc} Open Tracking to update.")
+            self.status_var.set(str(exc))
             return
         self.tracking_stop_event.clear()
         self.tracking_active = True
-        self.status_var.set("Sun tracking started.")
-        threading.Thread(target=self.sun_tracking_loop, daemon=True).start()
+        self.tracking_kind = kind
+        self.status_var.set(f"{self.kind_label(kind)} tracking started.")
+        threading.Thread(target=lambda: self.tracking_loop(kind), daemon=True).start()
 
     def stop_sun_tracking(self) -> None:
         self.tracking_stop_event.set()
         self.tracking_active = False
         self.stop_all()
-        self.status_var.set("Sun tracking stopped.")
+        self.status_var.set("Tracking stopped.")
 
-    def sun_tracking_loop(self) -> None:
+    def tracking_loop(self, kind: str) -> None:
         try:
             while not self.tracking_stop_event.is_set():
-                target = self.current_tracking_target()
-                self.events.put(("ok", self.apply_sun_position, target))
-                self.slew_all_to_target(target, "SUN")
-                self.events.put(("ok", self.finish_sun_slew, target))
+                target = self.current_tracking_target(kind)
+                self.events.put(("ok", self.apply_target_position, target))
+                self.slew_all_to_target(target, target.name[:8].upper())
+                self.events.put(("ok", self.finish_target_slew, target))
                 wait_until = time.monotonic() + max(0.1, self.site.track_interval_seconds)
                 while not self.tracking_stop_event.is_set() and time.monotonic() < wait_until:
                     time.sleep(0.05)
@@ -706,18 +857,41 @@ class WT2App(tk.Tk):
         finally:
             self.tracking_active = False
 
-    def current_sun_position(self) -> SunPosition:
-        return sun_position(self.site.latitude, self.site.longitude)
+    def target_for_kind(self, kind: str, when: Optional[datetime] = None) -> TargetPosition:
+        if kind == "sun":
+            sun = sun_position(self.site.latitude, self.site.longitude, when)
+            return TargetPosition("Sun", sun.azimuth, sun.elevation)
+        if kind == "moon":
+            return moon_position(self.site.latitude, self.site.longitude, when)
+        if kind == "source":
+            source = self.selected_source()
+            return source_position(
+                source.name,
+                source.ra_hours,
+                source.dec_degrees,
+                self.site.latitude,
+                self.site.longitude,
+                when,
+            )
+        raise RuntimeError(f"Unknown target type: {kind}")
 
-    def current_tracking_target(self) -> SunPosition:
-        source = self.current_sun_position()
+    def selected_source(self) -> SourceConfig:
+        if not self.site.selected_source:
+            raise RuntimeError("Open Sources and select a source before source tracking.")
+        source = self.sources.get(self.site.selected_source)
+        if source is None:
+            raise RuntimeError(f"Selected source {self.site.selected_source!r} was not found.")
+        return source
+
+    def current_tracking_target(self, kind: str) -> TargetPosition:
+        source = self.target_for_kind(kind)
         az_tolerance = self.site.az_track_tolerance_degrees
         el_tolerance = self.site.el_track_tolerance_degrees
         if az_tolerance >= 0 and el_tolerance >= 0:
             return source
 
         now = datetime.now(timezone.utc)
-        future = sun_position(self.site.latitude, self.site.longitude, now + timedelta(seconds=60))
+        future = self.target_for_kind(kind, now + timedelta(seconds=60))
         az_delta = shortest_angle_delta(source.azimuth, future.azimuth)
         el_delta = future.elevation - source.elevation
         azimuth = source.azimuth
@@ -726,7 +900,8 @@ class WT2App(tk.Tk):
             azimuth = (azimuth + abs(az_tolerance) * (1.0 if az_delta > 0 else -1.0)) % 360.0
         if el_tolerance < 0 and el_delta != 0.0:
             elevation += abs(el_tolerance) * (1.0 if el_delta > 0 else -1.0)
-        return SunPosition(
+        return TargetPosition(
+            name=source.name,
             azimuth=azimuth,
             elevation=elevation,
         )
@@ -752,11 +927,12 @@ class WT2App(tk.Tk):
         if not (-180.0 <= site.longitude <= 180.0):
             raise RuntimeError("Longitude must be -180..180 degrees.")
 
-    def apply_sun_position(self, target: SunPosition) -> None:
-        self.sun_az_var.set(f"Sun AZ {target.azimuth:0.2f}")
-        self.sun_el_var.set(f"Sun EL {target.elevation:0.2f}")
+    def apply_target_position(self, target: TargetPosition) -> None:
+        self.target_name_var.set(target.name)
+        self.target_az_var.set(f"AZ {target.azimuth:0.2f}")
+        self.target_el_var.set(f"EL {target.elevation:0.2f}")
 
-    def slew_all_to_target(self, target: SunPosition, mode: str) -> SunPosition:
+    def slew_all_to_target(self, target: TargetPosition, mode: str) -> TargetPosition:
         errors: list[str] = []
         threads: list[threading.Thread] = []
         lock = threading.Lock()
@@ -815,10 +991,19 @@ class WT2App(tk.Tk):
             return 0.01
         return abs(self.site.el_track_tolerance_degrees)
 
-    def finish_sun_slew(self, target: SunPosition) -> None:
-        self.apply_sun_position(target)
+    def finish_target_slew(self, target: TargetPosition) -> None:
+        self.apply_target_position(target)
         if not self.tracking_stop_event.is_set():
-            self.status_var.set("Sun target reached.")
+            self.status_var.set(f"{target.name} target reached.")
+
+    def kind_label(self, kind: str) -> str:
+        if kind == "sun":
+            return "Sun"
+        if kind == "moon":
+            return "Moon"
+        if kind == "source":
+            return self.site.selected_source or "Source"
+        return kind
 
     def open_limits(self) -> None:
         if not self.configs:
@@ -834,6 +1019,18 @@ class WT2App(tk.Tk):
             self.status_var.set("No antenna configs loaded.")
             return
         TrackingDialog(self)
+
+    def open_sources(self) -> None:
+        SourcesDialog(self)
+
+    def refresh_source_status(self) -> None:
+        if self.site.selected_source and self.site.selected_source in self.sources:
+            source = self.sources[self.site.selected_source]
+            self.source_status_var.set(
+                f"Source {source.name} RA {source.ra_hours:0.4f} Dec {source.dec_degrees:0.2f} Flux {source.flux_4800_mhz:0.1f}"
+            )
+        else:
+            self.source_status_var.set("Source none")
 
     def save_site_settings(self, message: str) -> None:
         save_site_config(self.config_path, self.site)

@@ -1,6 +1,7 @@
 [site]
 latitude = -32.724000
 longitude = 152.130167
+selected_source = Virgo A
 track_interval_seconds = 2.0
 az_track_tolerance_degrees = 0.10
 el_track_tolerance_degrees = 0.10
@@ -31,6 +32,21 @@ az_margin = 0.500
 el_margin = 0.500
 max_jog_seconds = 60.000
 poll_interval = 0.200
+
+[source:Virgo A]
+ra_hours = 12.513700
+dec_degrees = 12.391100
+flux_4800_mhz = 70.000
+
+[source:Centaurus A]
+ra_hours = 13.424100
+dec_degrees = -43.019100
+flux_4800_mhz = 650.000
+
+[source:Orion A]
+ra_hours = 5.588100
+dec_degrees = -5.391100
+flux_4800_mhz = 400.000
 
 [antenna:West]
 port = /dev/ttyUSB1
