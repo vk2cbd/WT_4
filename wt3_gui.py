@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from tkinter import messagebox, ttk
 from typing import Optional
 
-from wt3_astro import TargetPosition, moon_position, source_position
+from wt3_astro import TargetPosition, local_sidereal_time, moon_position, source_position
 from wt3_config import (
     SiteConfig,
     SourceConfig,
@@ -744,11 +744,21 @@ class AntennaPanel(ttk.Frame):
             row=row, column=column + 1, sticky="e", padx=(0, 8)
         )
 
-    def add_reference_block(self, sun_var: tk.StringVar, moon_var: tk.StringVar) -> None:
+    def add_reference_block(
+        self,
+        sun_var: tk.StringVar,
+        moon_var: tk.StringVar,
+        local_time_var: tk.StringVar,
+        lmst_var: tk.StringVar,
+        utc_var: tk.StringVar,
+    ) -> None:
         self.reference_frame = ttk.Frame(self)
         self.reference_frame.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
         ttk.Label(self.reference_frame, textvariable=sun_var).grid(row=0, column=0, sticky="w")
         ttk.Label(self.reference_frame, textvariable=moon_var).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        ttk.Label(self.reference_frame, textvariable=local_time_var).grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(self.reference_frame, textvariable=lmst_var).grid(row=4, column=0, sticky="w", pady=(2, 0))
+        ttk.Label(self.reference_frame, textvariable=utc_var).grid(row=5, column=0, sticky="w", pady=(2, 0))
 
     def _hold_button(self, master: tk.Misc, text: str, direction: Direction) -> ttk.Button:
         button = ttk.Button(master, text=text)
@@ -911,6 +921,9 @@ class WT3App(tk.Tk):
         self.target_el_var = tk.StringVar(value="EL --")
         self.sun_ref_var = tk.StringVar(value="Sun AZ -- EL --")
         self.moon_ref_var = tk.StringVar(value="Moon AZ -- EL --")
+        self.local_time_var = tk.StringVar(value="Local --")
+        self.lmst_var = tk.StringVar(value="LMST --")
+        self.utc_var = tk.StringVar(value="UTC --")
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -952,7 +965,13 @@ class WT3App(tk.Tk):
             panel = AntennaPanel(body, self, name, self.configs.get(name))
             panel.grid(row=0, column=index, sticky="nsew", padx=4)
             if index == 0:
-                panel.add_reference_block(self.sun_ref_var, self.moon_ref_var)
+                panel.add_reference_block(
+                    self.sun_ref_var,
+                    self.moon_ref_var,
+                    self.local_time_var,
+                    self.lmst_var,
+                    self.utc_var,
+                )
             self.panels[name] = panel
 
         if not self.configs:
@@ -1251,14 +1270,26 @@ class WT3App(tk.Tk):
         EncodersDialog(self)
 
     def update_reference_positions(self) -> None:
+        now_utc = datetime.now(timezone.utc)
+        local_now = now_utc.astimezone()
+        self.local_time_var.set(f"Local {local_now:%Y-%m-%d %H:%M:%S %Z}")
+        self.utc_var.set(f"UTC {now_utc:%Y-%m-%d %H:%M:%S}")
+        self.lmst_var.set(f"LMST {self.format_sidereal_time(local_sidereal_time(self.site.longitude, now_utc))}")
         try:
-            sun = self.target_for_kind("sun")
-            moon = self.target_for_kind("moon")
+            sun = self.target_for_kind("sun", now_utc)
+            moon = self.target_for_kind("moon", now_utc)
             self.sun_ref_var.set(f"Sun AZ {sun.azimuth:0.2f} EL {sun.elevation:0.2f}")
             self.moon_ref_var.set(f"Moon AZ {moon.azimuth:0.2f} EL {moon.elevation:0.2f}")
         except Exception as exc:
             self.sun_ref_var.set(f"Reference error: {exc}")
             self.moon_ref_var.set("")
+
+    def format_sidereal_time(self, degrees: float) -> str:
+        total_seconds = int(round((degrees / 15.0) * 3600.0)) % 86400
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
     def save_site_settings(self, message: str) -> None:
         save_site_config(self.config_path, self.site)
