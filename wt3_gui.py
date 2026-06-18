@@ -638,6 +638,7 @@ class TrackingDialog(tk.Toplevel):
             site = SiteConfig(
                 latitude=self.app.site.latitude,
                 longitude=self.app.site.longitude,
+                selected_source=self.app.site.selected_source,
                 track_interval_seconds=round(float(self.interval_var.get()), 1),
                 az_track_tolerance_degrees=round(float(self.az_tolerance_var.get()), 2),
                 el_track_tolerance_degrees=round(float(self.el_tolerance_var.get()), 2),
@@ -1056,7 +1057,8 @@ class WT3App(tk.Tk):
                 while not self.tracking_stop_event.is_set() and time.monotonic() < wait_until:
                     time.sleep(0.05)
         except Exception as exc:
-            self.events.put(("error", self.set_status, str(exc)))
+            self.tracking_stop_event.set()
+            self.events.put(("error", self.finish_tracking_fault, str(exc)))
         finally:
             self.tracking_active = False
 
@@ -1201,6 +1203,12 @@ class WT3App(tk.Tk):
         self.apply_target_position(target)
         if not self.tracking_stop_event.is_set():
             self.status_var.set(f"Tracking {target.name}.")
+
+    def finish_tracking_fault(self, message: str) -> None:
+        self.status_var.set(f"Tracking fault: {message}")
+        for panel in self.panels.values():
+            if panel.session and panel.status_var.get() in ("SLEWING", "TRACKING"):
+                panel.status_var.set("CONNECTED")
 
     def kind_label(self, kind: str) -> str:
         if kind == "sun":
