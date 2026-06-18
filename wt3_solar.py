@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small solar position helper for WT_2.
+"""Small solar position helper for WT3.
 
 The calculation follows the common NOAA solar position approximation. It is
 adequate for initial antenna tracking tests without adding a heavy dependency.

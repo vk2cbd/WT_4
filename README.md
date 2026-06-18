@@ -1,6 +1,6 @@
-# WT_2 Two-Antenna Safety Controller
+# WT3 Two-Antenna Safety Controller
 
-WT_2 is a GUI controller for two WinTrak Arduino/SVH3 antenna drive units.
+WT3 is a GUI controller for two WinTrak Arduino/SVH3 antenna drive units.
 
 It keeps the decoded serial protocol from WT_1, but adds the pieces needed
 before automatic tracking is safe:
@@ -28,8 +28,8 @@ sudo apt install -y python3-serial python3-tk
 Copy and edit the config:
 
 ```bash
-cp wt2.ini.example wt2.ini
-nano wt2.ini
+cp wt3.ini.example wt3.ini
+nano wt3.ini
 ```
 
 The antenna labels shown in the GUI and on the OLED come from the config
@@ -76,18 +76,18 @@ ls -l /dev/serial/by-id/
 ## Run
 
 ```bash
-python3 wt2_gui.py
+python3 wt3_gui.py
 ```
 
 Or specify another config:
 
 ```bash
-python3 wt2_gui.py --config wt2.ini
+python3 wt3_gui.py --config wt3.ini
 ```
 
 ## First Use
 
-1. Check `wt2.ini` ports and limits.
+1. Check `wt3.ini` ports and limits.
 2. Start the GUI.
 3. Press `Connect`.
 4. Confirm raw and calibrated positions display for both antennas.
@@ -107,7 +107,7 @@ For each antenna:
 3. Enter the actual AZ and EL in the antenna tab.
 4. Press `Calibrate`.
 
-The GUI reads the raw encoder positions and stores offsets in `wt2.ini`:
+The GUI reads the raw encoder positions and stores offsets in `wt3.ini`:
 
 ```ini
 az_offset = ...
@@ -131,9 +131,9 @@ F0 02 HH LL   set AZ Arduino position
 F1 02 HH LL   set EL Arduino position
 ```
 
-The value is encoded in hundredths of a degree. WT_2 immediately reads the axis
+The value is encoded in hundredths of a degree. WT3 immediately reads the axis
 back and confirms it matches. A successful Arduino position write resets the
-WT_2 software calibration offset for that axis to zero so calibration is not
+WT3 software calibration offset for that axis to zero so calibration is not
 applied twice.
 
 This does not write to the SVH3 quadrature pulse generator itself; that encoder
@@ -166,13 +166,13 @@ max_jog_seconds = 60.000
 ```
 
 It is a held-button watchdog. Change it in the GUI and press `Enter`/`Return`
-to save it. Existing `wt2.ini` files that still contain `5.000` will keep that
+to save it. Existing `wt3.ini` files that still contain `5.000` will keep that
 value until changed.
 
 ## Safety Limits
 
 Each antenna has independent limits. Press `Limits` in the GUI to edit and save
-these values without hand-editing `wt2.ini`:
+these values without hand-editing `wt3.ini`:
 
 ```ini
 az_min = 270.000
@@ -185,11 +185,11 @@ max_jog_seconds = 60.000
 poll_interval = 0.200
 ```
 
-The default is 60 seconds. If a button-release event is missed, WT_2 stops the
+The default is 60 seconds. If a button-release event is missed, WT3 stops the
 axis when this time expires.
 
 The Limits dialog validates numeric ranges before saving. New limits take effect
-immediately for connected antennas and are written to `wt2.ini`.
+immediately for connected antennas and are written to `wt3.ini`.
 
 Azimuth supports wrap-around. For example:
 
@@ -213,7 +213,7 @@ protocol error is treated as a fault and movement stops.
 
 ## Target Tracking
 
-WT_2 includes guarded target tracking:
+WT3 includes guarded target tracking:
 
 - `Track Sun` computes the current Sun AZ/EL and slews both connected antennas toward it.
 - `Track Moon` computes the current topocentric Moon AZ/EL and slews both connected antennas toward it.
@@ -233,7 +233,7 @@ WT_2 includes guarded target tracking:
 
 All tracking uses the same calibrated positions, software limits, margins, jog
 speed, max-jog watchdog, encoder polling, and stop commands as manual movement.
-If the target is outside the configured safe limits, WT_2 stops instead of
+If the target is outside the configured safe limits, WT3 stops instead of
 moving.
 
 Each antenna has separate AZ and EL tracking speeds:
@@ -254,7 +254,7 @@ az_slow_threshold_degrees = 3.0
 el_slow_threshold_degrees = 3.0
 ```
 
-When an axis is within its slow-degree value, WT_2 changes that axis to its slow
+When an axis is within its slow-degree value, WT3 changes that axis to its slow
 speed until it reaches that axis' tracking tolerance.
 
 Fine tracking moves that start already inside the slow-degree range begin at the
@@ -276,7 +276,7 @@ observer longitude.
 
 ## OLED Display
 
-WT_2 writes the OLED over the decoded display command:
+WT3 writes the OLED over the decoded display command:
 
 ```text
 F0/F1 35 column row length ASCII_TEXT 00
@@ -295,6 +295,6 @@ checked without relying only on the Raspberry Pi screen.
 
 ## Not Yet Included
 
-WT_2 does not yet include full astronomical schedule tracking or automatic scan
+WT3 does not yet include full astronomical schedule tracking or automatic scan
 patterns. Those should come after guarded target tracking is proven on both
 antennas.
