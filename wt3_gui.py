@@ -205,12 +205,14 @@ class SourcesDialog(tk.Toplevel):
 
         body = ttk.Frame(self, padding=10)
         body.grid(row=0, column=0, sticky="nsew")
-        self.tree = ttk.Treeview(body, columns=("ra", "dec", "az", "el", "flux"), show="headings", height=7)
+        self.tree = ttk.Treeview(body, columns=("source", "ra", "dec", "az", "el", "flux"), show="headings", height=7)
+        self.tree.heading("source", text="Source")
         self.tree.heading("ra", text="RA h")
         self.tree.heading("dec", text="Dec deg")
         self.tree.heading("az", text="AZ")
         self.tree.heading("el", text="EL")
         self.tree.heading("flux", text="4800 MHz")
+        self.tree.column("source", width=120, anchor="w")
         self.tree.column("ra", width=80, anchor="e")
         self.tree.column("dec", width=80, anchor="e")
         self.tree.column("az", width=70, anchor="e")
@@ -253,7 +255,7 @@ class SourcesDialog(tk.Toplevel):
             self.tree.selection_set(self.app.site.selected_source)
             self.tree.focus(self.app.site.selected_source)
 
-    def source_row_values(self, source: SourceConfig) -> tuple[str, str, str, str, str]:
+    def source_row_values(self, source: SourceConfig) -> tuple[str, str, str, str, str, str]:
         position = source_position(
             source.name,
             source.ra_hours,
@@ -262,6 +264,7 @@ class SourcesDialog(tk.Toplevel):
             self.app.site.longitude,
         )
         return (
+            source.name,
             f"{source.ra_hours:0.6f}",
             f"{source.dec_degrees:0.4f}",
             f"{position.azimuth:0.2f}",
