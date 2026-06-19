@@ -513,7 +513,7 @@ class CalibrationDialog(tk.Toplevel):
         def work() -> Position:
             position = panel.session.calibrate(actual_az, actual_el)
             self.app.save_config("Calibration saved.")
-            panel.session.update_oled("CAL")
+            panel.session.update_oled("CAL", activity="STOPPED")
             return position
 
         self.app.run_worker(
@@ -546,7 +546,7 @@ class CalibrationDialog(tk.Toplevel):
             if panel and panel.session:
                 with panel.session.lock:
                     position = panel.session.read_position_locked()
-                    panel.session.update_oled("CAL")
+                    panel.session.update_oled("CAL", activity="STOPPED")
                     return position
             return None
 
@@ -707,7 +707,7 @@ class EncodersDialog(tk.Toplevel):
         def work() -> Position:
             updated = session.set_encoder_position(axis, position)
             self.app.save_config("Encoder position saved.")
-            session.update_oled("CAL")
+            session.update_oled("CAL", activity="STOPPED")
             return updated
 
         self.app.run_worker(
@@ -970,7 +970,7 @@ class AntennaPanel(ttk.Frame):
     def attach(self, session: SafeAntenna) -> None:
         self.session = session
         self.sync_config_settings()
-        self.status_var.set("CONNECTED")
+        self.status_var.set("STOPPED")
         self.fault_var.set("")
         self.update_position(session.last_position)
 
@@ -1003,7 +1003,7 @@ class AntennaPanel(ttk.Frame):
 
     def set_fault(self, text: str) -> None:
         self.fault_var.set(text)
-        self.status_var.set("FAULT" if text else "CONNECTED")
+        self.status_var.set("FAULT" if text else "STOPPED")
 
     def set_tracking_status(self, text: str) -> None:
         if self.session and not self.fault_var.get():
@@ -1012,12 +1012,12 @@ class AntennaPanel(ttk.Frame):
     def set_message(self, text: str) -> None:
         self.fault_var.set(text)
         if self.session:
-            self.status_var.set("CONNECTED")
+            self.status_var.set("STOPPED")
 
     def clear_message(self) -> None:
         self.fault_var.set("")
         if self.session:
-            self.status_var.set("CONNECTED")
+            self.status_var.set("STOPPED")
 
     def refresh(self) -> None:
         if not self.session:
@@ -1072,7 +1072,7 @@ class AntennaPanel(ttk.Frame):
             session.update_oled("MANUAL", activity="JOG")
             session.guarded_jog(direction, speed, None, self.stop_event, realtime_update)
             position = session.read_position()
-            session.update_oled("MANUAL")
+            session.update_oled("MANUAL", activity="STOPPED")
             return position
 
         self.app.run_worker(work, self.finish_jog, self.finish_jog_fault)
@@ -1196,7 +1196,7 @@ class WT3App(tk.Tk):
 
     def connect_session(self, config) -> SafeAntenna:
         session = SafeAntenna(config)
-        session.update_oled("MANUAL")
+        session.update_oled("MANUAL", activity="STOPPED")
         return session
 
     def attach_session(self, name: str, session: SafeAntenna) -> None:
@@ -1205,7 +1205,7 @@ class WT3App(tk.Tk):
             self.panels[name].attach(session)
         connected = len(self.sessions)
         total = len(self.configs)
-        self.status_var.set(f"Connected {connected}/{total} antennas. Guarded manual mode ready.")
+        self.status_var.set(f"Stopped. Connected {connected}/{total} antennas.")
 
     def disconnect_all(self) -> None:
         if self.parking_active:
@@ -1231,7 +1231,7 @@ class WT3App(tk.Tk):
         connected = len(self.sessions)
         total = len(self.configs)
         if connected:
-            self.status_var.set(f"Connected {connected}/{total} antennas. Guarded manual mode ready.")
+            self.status_var.set(f"Stopped. Connected {connected}/{total} antennas.")
         else:
             self.status_var.set("Disconnected.")
 
@@ -1241,7 +1241,11 @@ class WT3App(tk.Tk):
 
     def oled_all(self) -> None:
         for session in self.sessions.values():
-            self.run_worker(lambda s=session: s.update_oled("MANUAL"), lambda _result: None, self.set_status)
+            self.run_worker(
+                lambda s=session: s.update_oled("MANUAL", activity="STOPPED"),
+                lambda _result: None,
+                self.set_status,
+            )
 
     def start_tracking(self, kind: str) -> None:
         if self.tracking_active:
@@ -1268,7 +1272,7 @@ class WT3App(tk.Tk):
         self.tracking_stop_event.set()
         self.tracking_active = False
         self.stop_all()
-        self.status_var.set("Tracking stopped.")
+        self.status_var.set("Stopped.")
 
     def park_all(self) -> None:
         if self.parking_active:
@@ -1378,7 +1382,7 @@ class WT3App(tk.Tk):
         self.park_stop_event.clear()
         for panel in self.panels.values():
             if panel.session and panel.status_var.get() == "PARKING":
-                panel.status_var.set("CONNECTED")
+                panel.status_var.set("STOPPED")
         self.status_var.set(f"Park fault: {message}")
 
     def tracking_loop(self, kind: str) -> None:
@@ -1391,6 +1395,8 @@ class WT3App(tk.Tk):
                 if not acquired:
                     self.events.put(("ok", self.set_status, f"Slewing to {target.name}."))
                 self.slew_all_to_target(target, target.name[:8].upper(), show_slewing=not acquired)
+                if self.tracking_stop_event.is_set():
+                    break
                 acquired = True
                 self.tracking_last_update = time.monotonic()
                 self.events.put(("ok", self.finish_target_slew, target))
@@ -1532,6 +1538,11 @@ class WT3App(tk.Tk):
                         self.site.el_slow_threshold_degrees,
                         progress,
                     )
+                    if self.tracking_stop_event.is_set():
+                        session.update_oled(mode, target.azimuth, target.elevation, "STOPPED")
+                        self.events.put(("position", panel.update_position, position))
+                        self.events.put(("ok", panel.set_tracking_status, "STOPPED"))
+                        return
                     session.update_oled(mode, target.azimuth, target.elevation, "TRACKING")
                     self.events.put(("position", panel.update_position, position))
                     self.events.put(("ok", panel.set_tracking_status, "TRACKING"))
@@ -1580,7 +1591,7 @@ class WT3App(tk.Tk):
         self.status_var.set(f"Tracking fault: {message}")
         for panel in self.panels.values():
             if panel.session and panel.status_var.get() in ("SLEWING", "TRACKING"):
-                panel.status_var.set("CONNECTED")
+                panel.status_var.set("STOPPED")
 
     def refresh_tracking_target_display(self) -> None:
         if not self.tracking_active or not self.tracking_kind:
@@ -1680,10 +1691,14 @@ class WT3App(tk.Tk):
         for panel in self.panels.values():
             panel.stop_event.set()
             if panel.session:
-                panel.status_var.set("CONNECTED")
+                panel.status_var.set("STOPPED")
         for session in self.sessions.values():
-            self.run_worker(lambda s=session: s.stop_all(), lambda _result: None, self.set_status)
-        self.status_var.set("Stop commands sent.")
+            self.run_worker(
+                lambda s=session: (s.stop_all(), s.update_oled("MANUAL", activity="STOPPED")),
+                lambda _result: None,
+                self.set_status,
+            )
+        self.status_var.set("Stopped.")
 
     def periodic_refresh(self) -> None:
         if not self.tracking_active and not self.parking_active:
