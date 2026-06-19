@@ -1066,9 +1066,10 @@ class AntennaPanel(ttk.Frame):
 
         def realtime_update(position: Position) -> None:
             self.queue_position_update(position)
-            session.update_oled_position()
+            session.update_oled_position(activity="JOG")
 
         def work() -> Position:
+            session.update_oled("MANUAL", activity="JOG")
             session.guarded_jog(direction, speed, None, self.stop_event, realtime_update)
             position = session.read_position()
             session.update_oled("MANUAL")
@@ -1301,12 +1302,13 @@ class WT3App(tk.Tk):
             def progress(position: Position) -> None:
                 if panel:
                     self.events.put(("position", panel.update_position, position))
-                session.update_oled_position(session.config.park_az, session.config.park_el)
+                session.update_oled_position(session.config.park_az, session.config.park_el, "PARKING")
 
             def worker() -> None:
                 try:
                     if panel:
                         self.events.put(("ok", panel.set_tracking_status, "PARKING"))
+                    session.update_oled("PARK", session.config.park_az, session.config.park_el, "PARKING")
                     position = session.guarded_slew_to(
                         session.config.park_az,
                         session.config.park_el,
@@ -1325,7 +1327,7 @@ class WT3App(tk.Tk):
                     )
                     if self.park_stop_event.is_set():
                         raise RuntimeError("Park cancelled.")
-                    session.update_oled("PARK", session.config.park_az, session.config.park_el)
+                    session.update_oled("PARK", session.config.park_az, session.config.park_el, "PARKED")
                     if panel:
                         self.events.put(("position", panel.update_position, position))
                         self.events.put(("ok", panel.set_tracking_status, "PARKED"))
@@ -1504,13 +1506,16 @@ class WT3App(tk.Tk):
         lock = threading.Lock()
 
         def make_worker(name: str, session: SafeAntenna, panel: AntennaPanel):
+            activity = "SLEWING" if show_slewing else "TRACKING"
+
             def progress(position: Position) -> None:
                 self.events.put(("position", panel.update_position, position))
-                session.update_oled_position(target.azimuth, target.elevation)
+                session.update_oled_position(target.azimuth, target.elevation, activity)
 
             def worker() -> None:
                 try:
-                    self.events.put(("ok", panel.set_tracking_status, "SLEWING" if show_slewing else "TRACKING"))
+                    self.events.put(("ok", panel.set_tracking_status, activity))
+                    session.update_oled(mode, target.azimuth, target.elevation, activity)
                     position = session.guarded_slew_to(
                         target.azimuth,
                         target.elevation,
@@ -1527,7 +1532,7 @@ class WT3App(tk.Tk):
                         self.site.el_slow_threshold_degrees,
                         progress,
                     )
-                    session.update_oled(mode, target.azimuth, target.elevation)
+                    session.update_oled(mode, target.azimuth, target.elevation, "TRACKING")
                     self.events.put(("position", panel.update_position, position))
                     self.events.put(("ok", panel.set_tracking_status, "TRACKING"))
                 except Exception as exc:

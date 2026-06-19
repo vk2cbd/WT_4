@@ -319,6 +319,7 @@ class WinTrakController:
         fault: str = "",
         target_azimuth: Optional[float] = None,
         target_elevation: Optional[float] = None,
+        activity: str = "",
     ) -> None:
         state = fault[:7].upper() if fault else "SAFE"
         self.oled_write(0xF0, 0, 0, label.upper(), width=8)
@@ -327,6 +328,7 @@ class WinTrakController:
         self.oled_write(0xF1, 0, 2, "EL ", width=3)
         self.oled_write(0xF0, 3, 1, f"{position.azimuth:6.2f}", width=6)
         self.oled_write(0xF1, 3, 2, f"{position.elevation:6.2f}", width=6)
+        self.oled_write(0xF0, 0, 3, activity.upper(), width=8)
         self.oled_write(0xF0, 0, 5, mode.upper(), width=8)
         self.oled_write(0xF0, 0, 6, "AZ", width=2)
         self.oled_write(0xF1, 0, 7, "EL", width=2)
@@ -338,9 +340,12 @@ class WinTrakController:
         position: Position,
         target_azimuth: Optional[float] = None,
         target_elevation: Optional[float] = None,
+        activity: Optional[str] = None,
     ) -> None:
         self.oled_write(0xF0, 3, 1, f"{position.azimuth:6.2f}", width=6)
         self.oled_write(0xF1, 3, 2, f"{position.elevation:6.2f}", width=6)
+        if activity is not None:
+            self.oled_write(0xF0, 0, 3, activity.upper(), width=8)
         self.oled_write(0xF0, 3, 6, f"{(target_azimuth if target_azimuth is not None else position.azimuth):6.2f}", width=6)
         self.oled_write(0xF1, 3, 7, f"{(target_elevation if target_elevation is not None else position.elevation):6.2f}", width=6)
 
@@ -624,19 +629,23 @@ class SafeAntenna:
         mode: str = "MANUAL",
         target_azimuth: Optional[float] = None,
         target_elevation: Optional[float] = None,
+        activity: str = "",
     ) -> None:
         with self.lock:
             pos = self.last_position or self.read_position_locked()
-            self.controller.oled_status(self.config.name, pos, mode, self.fault, target_azimuth, target_elevation)
+            self.controller.oled_status(
+                self.config.name, pos, mode, self.fault, target_azimuth, target_elevation, activity
+            )
 
     def update_oled_position(
         self,
         target_azimuth: Optional[float] = None,
         target_elevation: Optional[float] = None,
+        activity: Optional[str] = None,
     ) -> None:
         with self.lock:
             pos = self.last_position or self.read_position_locked()
-            self.controller.oled_position(pos, target_azimuth, target_elevation)
+            self.controller.oled_position(pos, target_azimuth, target_elevation, activity)
 
     def _start_direction(self, direction: Direction, speed: int) -> None:
         if direction == Direction.AZ_CW:
