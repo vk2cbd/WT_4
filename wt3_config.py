@@ -27,6 +27,8 @@ class SiteConfig:
     track_interval_seconds: float = 2.0
     az_track_tolerance_degrees: float = 0.10
     el_track_tolerance_degrees: float = 0.10
+    az_stop_tolerance_degrees: float = 0.10
+    el_stop_tolerance_degrees: float = 0.10
     az_slow_speed: int = 20
     el_slow_speed: int = 20
     az_slow_threshold_degrees: float = 3.0
@@ -41,13 +43,21 @@ def load_site_config(path: Union[str, Path]) -> SiteConfig:
     old_tolerance = parser.getfloat("site", "track_tolerance_degrees", fallback=0.10)
     old_slow_speed = parser.getint("site", "slow_speed", fallback=20)
     old_slow_threshold = parser.getfloat("site", "slow_threshold_degrees", fallback=3.0)
+    az_start_tolerance = parser.getfloat("site", "az_track_tolerance_degrees", fallback=old_tolerance)
+    el_start_tolerance = parser.getfloat("site", "el_track_tolerance_degrees", fallback=old_tolerance)
     return SiteConfig(
         latitude=parser.getfloat("site", "latitude", fallback=-32.724000),
         longitude=parser.getfloat("site", "longitude", fallback=152.130167),
         selected_source=parser.get("site", "selected_source", fallback="").strip(),
         track_interval_seconds=parser.getfloat("site", "track_interval_seconds", fallback=2.0),
-        az_track_tolerance_degrees=parser.getfloat("site", "az_track_tolerance_degrees", fallback=old_tolerance),
-        el_track_tolerance_degrees=parser.getfloat("site", "el_track_tolerance_degrees", fallback=old_tolerance),
+        az_track_tolerance_degrees=az_start_tolerance,
+        el_track_tolerance_degrees=el_start_tolerance,
+        az_stop_tolerance_degrees=parser.getfloat(
+            "site", "az_stop_tolerance_degrees", fallback=abs(az_start_tolerance)
+        ),
+        el_stop_tolerance_degrees=parser.getfloat(
+            "site", "el_stop_tolerance_degrees", fallback=abs(el_start_tolerance)
+        ),
         az_slow_speed=parser.getint("site", "az_slow_speed", fallback=old_slow_speed),
         el_slow_speed=parser.getint("site", "el_slow_speed", fallback=old_slow_speed),
         az_slow_threshold_degrees=parser.getfloat("site", "az_slow_threshold_degrees", fallback=old_slow_threshold),
@@ -197,6 +207,8 @@ def _site_section(site: SiteConfig) -> dict[str, str]:
         "track_interval_seconds": f"{site.track_interval_seconds:.1f}",
         "az_track_tolerance_degrees": f"{site.az_track_tolerance_degrees:.2f}",
         "el_track_tolerance_degrees": f"{site.el_track_tolerance_degrees:.2f}",
+        "az_stop_tolerance_degrees": f"{site.az_stop_tolerance_degrees:.2f}",
+        "el_stop_tolerance_degrees": f"{site.el_stop_tolerance_degrees:.2f}",
         "az_slow_speed": str(max(0, min(100, int(site.az_slow_speed)))),
         "el_slow_speed": str(max(0, min(100, int(site.el_slow_speed)))),
         "az_slow_threshold_degrees": f"{site.az_slow_threshold_degrees:.1f}",

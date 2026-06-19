@@ -51,6 +51,8 @@ selected_source = Virgo A
 track_interval_seconds = 2.0
 az_track_tolerance_degrees = 0.10
 el_track_tolerance_degrees = 0.10
+az_stop_tolerance_degrees = 0.10
+el_stop_tolerance_degrees = 0.10
 az_slow_speed = 20
 el_slow_speed = 20
 az_slow_threshold_degrees = 3.0
@@ -259,7 +261,7 @@ WT3 includes guarded target tracking:
 - AZ and EL are allowed to slew concurrently on each antenna.
 - Observer latitude/longitude are edited with `Observer`.
 - Named RA/Dec radio sources are edited and selected with `Sources`.
-- `Interval`, AZ/EL tolerance, AZ/EL slow speed, AZ/EL slow deg, AZ/EL tracking speed, and `Max jog` are edited with `Tracking`.
+- `Interval`, AZ/EL start tolerance, AZ/EL stop tolerance, AZ/EL slow speed, AZ/EL slow deg, AZ/EL tracking speed, and `Max jog` are edited with `Tracking`.
 - The main screen shows one shared target AZ/EL; the OLED displays use the
   same shared target values.
 - Sun and Moon AZ/EL are shown continuously as reference positions, even when
@@ -282,23 +284,31 @@ Each axis also has its own tracking tolerance and slow-rate settings:
 ```ini
 az_track_tolerance_degrees = 0.10
 el_track_tolerance_degrees = 0.10
+az_stop_tolerance_degrees = 0.10
+el_stop_tolerance_degrees = 0.10
 az_slow_speed = 20
 el_slow_speed = 20
 az_slow_threshold_degrees = 3.0
 el_slow_threshold_degrees = 3.0
 ```
 
+The track tolerance values are start tolerances: an axis does not move until its
+error is larger than that axis' start tolerance. Once an axis has started moving,
+it stops when it reaches that axis' stop tolerance. This gives the tracking loop
+a deliberate hysteresis band to reduce short repeated starts.
+
 When an axis is within its slow-degree value, WT3 changes that axis to its slow
-speed until it reaches that axis' tracking tolerance.
+speed until it reaches that axis' stop tolerance.
 
 Fine tracking moves that start already inside the slow-degree range begin at the
 axis slow speed. The Tracking dialog requires each axis slow speed to be lower
 than the matching antenna tracking speed.
 
-`Interval` is limited to 0.1..10.0 seconds in 0.1 second steps. Each axis
+`Interval` is limited to 0.1..10.0 seconds in 0.1 second steps. Each axis start
 tolerance is limited to +/-0.01..0.20 degrees in 0.01 degree steps. A negative
-axis tolerance leads the target on that axis by that amount and tracks to that led
-target with a 0.01 degree stopping tolerance.
+start tolerance leads the target on that axis by that amount. Each stop
+tolerance is positive and must be no larger than the absolute value of the
+matching start tolerance.
 
 Use low speed for the first tests and confirm the displayed target AZ/EL is
 reasonable before allowing larger slews.

@@ -518,8 +518,10 @@ class SafeAntenna:
         az_speed: int,
         el_speed: int,
         stop_event: threading.Event,
-        az_tolerance: float = 0.5,
-        el_tolerance: float = 0.5,
+        az_start_tolerance: float = 0.5,
+        el_start_tolerance: float = 0.5,
+        az_stop_tolerance: Optional[float] = None,
+        el_stop_tolerance: Optional[float] = None,
         az_slow_speed: Optional[int] = None,
         el_slow_speed: Optional[int] = None,
         az_slow_threshold: float = 3.0,
@@ -527,10 +529,14 @@ class SafeAntenna:
         update_callback: Optional[Callable[[Position], None]] = None,
     ) -> Position:
         target_azimuth = normalize_degrees(target_azimuth)
-        az_tolerance = max(0.01, abs(float(az_tolerance)))
-        el_tolerance = max(0.01, abs(float(el_tolerance)))
-        az_slow_threshold = max(az_tolerance, float(az_slow_threshold))
-        el_slow_threshold = max(el_tolerance, float(el_slow_threshold))
+        az_start_tolerance = max(0.01, abs(float(az_start_tolerance)))
+        el_start_tolerance = max(0.01, abs(float(el_start_tolerance)))
+        az_stop_tolerance = max(0.01, abs(float(az_start_tolerance if az_stop_tolerance is None else az_stop_tolerance)))
+        el_stop_tolerance = max(0.01, abs(float(el_start_tolerance if el_stop_tolerance is None else el_stop_tolerance)))
+        az_stop_tolerance = min(az_stop_tolerance, az_start_tolerance)
+        el_stop_tolerance = min(el_stop_tolerance, el_start_tolerance)
+        az_slow_threshold = max(az_start_tolerance, float(az_slow_threshold))
+        el_slow_threshold = max(el_start_tolerance, float(el_slow_threshold))
         az_fast_speed = clamp_speed(az_speed)
         el_fast_speed = clamp_speed(el_speed)
         az_slow_speed = clamp_speed(az_fast_speed if az_slow_speed is None else az_slow_speed)
@@ -541,23 +547,23 @@ class SafeAntenna:
         az_error = self.config.limits.azimuth_delta_to_target(pos.azimuth, target_azimuth)
         el_error = target_elevation - pos.elevation
         active: dict[Axis, dict[str, object]] = {}
-        if abs(az_error) > az_tolerance:
+        if abs(az_error) > az_start_tolerance:
             active[Axis.AZIMUTH] = {
                 "direction": Direction.AZ_CW if az_error > 0 else Direction.AZ_CCW,
                 "target": target_azimuth,
                 "previous_error": az_error,
-                "tolerance": az_tolerance,
+                "tolerance": az_stop_tolerance,
                 "fast_speed": az_fast_speed,
                 "slow_speed": az_slow_speed,
                 "slow_threshold": az_slow_threshold,
                 "slow": abs(az_error) <= az_slow_threshold,
             }
-        if abs(el_error) > el_tolerance:
+        if abs(el_error) > el_start_tolerance:
             active[Axis.ELEVATION] = {
                 "direction": Direction.EL_UP if el_error > 0 else Direction.EL_DOWN,
                 "target": target_elevation,
                 "previous_error": el_error,
-                "tolerance": el_tolerance,
+                "tolerance": el_stop_tolerance,
                 "fast_speed": el_fast_speed,
                 "slow_speed": el_slow_speed,
                 "slow_threshold": el_slow_threshold,

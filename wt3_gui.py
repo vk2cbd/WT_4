@@ -232,6 +232,8 @@ class ObserverDialog(tk.Toplevel):
                 track_interval_seconds=self.app.site.track_interval_seconds,
                 az_track_tolerance_degrees=self.app.site.az_track_tolerance_degrees,
                 el_track_tolerance_degrees=self.app.site.el_track_tolerance_degrees,
+                az_stop_tolerance_degrees=self.app.site.az_stop_tolerance_degrees,
+                el_stop_tolerance_degrees=self.app.site.el_stop_tolerance_degrees,
                 az_slow_speed=self.app.site.az_slow_speed,
                 el_slow_speed=self.app.site.el_slow_speed,
                 az_slow_threshold_degrees=self.app.site.az_slow_threshold_degrees,
@@ -737,6 +739,8 @@ class TrackingDialog(tk.Toplevel):
         self.interval_var = tk.StringVar(value=f"{app.site.track_interval_seconds:0.1f}")
         self.az_tolerance_var = tk.StringVar(value=f"{app.site.az_track_tolerance_degrees:0.2f}")
         self.el_tolerance_var = tk.StringVar(value=f"{app.site.el_track_tolerance_degrees:0.2f}")
+        self.az_stop_tolerance_var = tk.StringVar(value=f"{app.site.az_stop_tolerance_degrees:0.2f}")
+        self.el_stop_tolerance_var = tk.StringVar(value=f"{app.site.el_stop_tolerance_degrees:0.2f}")
         self.az_slow_speed_var = tk.StringVar(value=str(app.site.az_slow_speed))
         self.el_slow_speed_var = tk.StringVar(value=str(app.site.el_slow_speed))
         self.az_slow_threshold_var = tk.StringVar(value=f"{app.site.az_slow_threshold_degrees:0.1f}")
@@ -748,17 +752,20 @@ class TrackingDialog(tk.Toplevel):
 
         ttk.Separator(body, orient="horizontal").grid(row=1, column=0, columnspan=5, sticky="ew", pady=8)
         ttk.Label(body, text="Axis").grid(row=2, column=0, sticky="w")
-        ttk.Label(body, text="Tolerance").grid(row=2, column=1, sticky="w")
-        ttk.Label(body, text="Slow speed").grid(row=2, column=2, sticky="w")
-        ttk.Label(body, text="Slow deg").grid(row=2, column=3, sticky="w")
+        ttk.Label(body, text="Start tol").grid(row=2, column=1, sticky="w")
+        ttk.Label(body, text="Stop tol").grid(row=2, column=2, sticky="w")
+        ttk.Label(body, text="Slow speed").grid(row=2, column=3, sticky="w")
+        ttk.Label(body, text="Slow deg").grid(row=2, column=4, sticky="w")
         ttk.Label(body, text="AZ").grid(row=3, column=0, sticky="w", pady=2)
         self._spin_only(body, self.az_tolerance_var, 3, 1, -0.20, 0.20, 0.01, width=7)
-        ttk.Entry(body, textvariable=self.az_slow_speed_var, width=7).grid(row=3, column=2, sticky="w", pady=2)
-        ttk.Entry(body, textvariable=self.az_slow_threshold_var, width=7).grid(row=3, column=3, sticky="w", pady=2)
+        self._spin_only(body, self.az_stop_tolerance_var, 3, 2, 0.01, 0.20, 0.01, width=7)
+        ttk.Entry(body, textvariable=self.az_slow_speed_var, width=7).grid(row=3, column=3, sticky="w", pady=2)
+        ttk.Entry(body, textvariable=self.az_slow_threshold_var, width=7).grid(row=3, column=4, sticky="w", pady=2)
         ttk.Label(body, text="EL").grid(row=4, column=0, sticky="w", pady=2)
         self._spin_only(body, self.el_tolerance_var, 4, 1, -0.20, 0.20, 0.01, width=7)
-        ttk.Entry(body, textvariable=self.el_slow_speed_var, width=7).grid(row=4, column=2, sticky="w", pady=2)
-        ttk.Entry(body, textvariable=self.el_slow_threshold_var, width=7).grid(row=4, column=3, sticky="w", pady=2)
+        self._spin_only(body, self.el_stop_tolerance_var, 4, 2, 0.01, 0.20, 0.01, width=7)
+        ttk.Entry(body, textvariable=self.el_slow_speed_var, width=7).grid(row=4, column=3, sticky="w", pady=2)
+        ttk.Entry(body, textvariable=self.el_slow_threshold_var, width=7).grid(row=4, column=4, sticky="w", pady=2)
 
         ttk.Separator(body, orient="horizontal").grid(row=5, column=0, columnspan=5, sticky="ew", pady=8)
         ttk.Label(body, text="Antenna").grid(row=6, column=0, sticky="w")
@@ -836,6 +843,8 @@ class TrackingDialog(tk.Toplevel):
                 track_interval_seconds=round(float(self.interval_var.get()), 1),
                 az_track_tolerance_degrees=round(float(self.az_tolerance_var.get()), 2),
                 el_track_tolerance_degrees=round(float(self.el_tolerance_var.get()), 2),
+                az_stop_tolerance_degrees=round(float(self.az_stop_tolerance_var.get()), 2),
+                el_stop_tolerance_degrees=round(float(self.el_stop_tolerance_var.get()), 2),
                 az_slow_speed=int(self.az_slow_speed_var.get()),
                 el_slow_speed=int(self.el_slow_speed_var.get()),
                 az_slow_threshold_degrees=round(float(self.az_slow_threshold_var.get()), 1),
@@ -1304,6 +1313,8 @@ class WT3App(tk.Tk):
                         session.config.az_track_speed,
                         session.config.el_track_speed,
                         self.park_stop_event,
+                        self.az_tracking_start_tolerance(),
+                        self.el_tracking_start_tolerance(),
                         self.az_tracking_stop_tolerance(),
                         self.el_tracking_stop_tolerance(),
                         self.site.az_slow_speed,
@@ -1443,16 +1454,37 @@ class WT3App(tk.Tk):
         self.validate_observer(site)
         if not (0.1 <= site.track_interval_seconds <= 10.0):
             raise RuntimeError("Tracking interval must be 0.1..10.0 seconds.")
-        self._validate_axis_tracking("AZ", site.az_track_tolerance_degrees, site.az_slow_speed, site.az_slow_threshold_degrees)
-        self._validate_axis_tracking("EL", site.el_track_tolerance_degrees, site.el_slow_speed, site.el_slow_threshold_degrees)
+        self._validate_axis_tracking(
+            "AZ",
+            site.az_track_tolerance_degrees,
+            site.az_stop_tolerance_degrees,
+            site.az_slow_speed,
+            site.az_slow_threshold_degrees,
+        )
+        self._validate_axis_tracking(
+            "EL",
+            site.el_track_tolerance_degrees,
+            site.el_stop_tolerance_degrees,
+            site.el_slow_speed,
+            site.el_slow_threshold_degrees,
+        )
 
-    def _validate_axis_tracking(self, axis: str, tolerance: float, slow_speed: int, slow_threshold: float) -> None:
-        if not (-0.2 <= tolerance <= 0.2) or tolerance == 0.0:
-            raise RuntimeError(f"{axis} tolerance must be -0.20..-0.01 or 0.01..0.20 degrees.")
+    def _validate_axis_tracking(
+        self,
+        axis: str,
+        start_tolerance: float,
+        stop_tolerance: float,
+        slow_speed: int,
+        slow_threshold: float,
+    ) -> None:
+        if not (-0.2 <= start_tolerance <= 0.2) or start_tolerance == 0.0:
+            raise RuntimeError(f"{axis} start tolerance must be -0.20..-0.01 or 0.01..0.20 degrees.")
+        if not (0.01 <= stop_tolerance <= abs(start_tolerance)):
+            raise RuntimeError(f"{axis} stop tolerance must be 0.01 degrees up to the start tolerance.")
         if not (1 <= slow_speed <= 100):
             raise RuntimeError(f"{axis} slow speed must be 1..100.")
-        if not (abs(tolerance) <= slow_threshold <= 30.0):
-            raise RuntimeError(f"{axis} slow deg must be at least tolerance and no more than 30 degrees.")
+        if not (abs(start_tolerance) <= slow_threshold <= 30.0):
+            raise RuntimeError(f"{axis} slow deg must be at least start tolerance and no more than 30 degrees.")
 
     def validate_observer(self, site: SiteConfig) -> None:
         if not (-90.0 <= site.latitude <= 90.0):
@@ -1485,6 +1517,8 @@ class WT3App(tk.Tk):
                         session.config.az_track_speed,
                         session.config.el_track_speed,
                         self.tracking_stop_event,
+                        self.az_tracking_start_tolerance(),
+                        self.el_tracking_start_tolerance(),
                         self.az_tracking_stop_tolerance(),
                         self.el_tracking_stop_tolerance(),
                         self.site.az_slow_speed,
@@ -1518,15 +1552,17 @@ class WT3App(tk.Tk):
             raise RuntimeError("; ".join(errors))
         return target
 
-    def az_tracking_stop_tolerance(self) -> float:
-        if self.site.az_track_tolerance_degrees < 0:
-            return 0.01
+    def az_tracking_start_tolerance(self) -> float:
         return abs(self.site.az_track_tolerance_degrees)
 
-    def el_tracking_stop_tolerance(self) -> float:
-        if self.site.el_track_tolerance_degrees < 0:
-            return 0.01
+    def az_tracking_stop_tolerance(self) -> float:
+        return self.site.az_stop_tolerance_degrees
+
+    def el_tracking_start_tolerance(self) -> float:
         return abs(self.site.el_track_tolerance_degrees)
+
+    def el_tracking_stop_tolerance(self) -> float:
+        return self.site.el_stop_tolerance_degrees
 
     def finish_target_slew(self, target: TargetPosition) -> None:
         self.apply_target_position(target)
