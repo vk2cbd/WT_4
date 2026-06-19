@@ -420,7 +420,7 @@ class CalibrationDialog(tk.Toplevel):
         self.resizable(False, False)
         self.transient(app)
         self.grab_set()
-        self.entries: dict[str, tuple[tk.StringVar, tk.StringVar]] = {}
+        self.entries: dict[str, dict[str, tk.StringVar]] = {}
 
         tabs = ttk.Notebook(self)
         tabs.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
@@ -429,34 +429,66 @@ class CalibrationDialog(tk.Toplevel):
             tabs.add(frame, text=name)
             az_var = tk.StringVar()
             el_var = tk.StringVar()
+            az_offset_var = tk.StringVar()
+            el_offset_var = tk.StringVar()
             if panel.session and panel.session.last_position:
                 az_var.set(f"{panel.session.last_position.azimuth:0.2f}")
                 el_var.set(f"{panel.session.last_position.elevation:0.2f}")
+            config = panel.config or app.configs.get(name)
+            if config:
+                az_offset_var.set(f"{config.calibration.az_offset:0.2f}")
+                el_offset_var.set(f"{config.calibration.el_offset:0.2f}")
             ttk.Label(frame, text="Actual AZ").grid(row=0, column=0, sticky="w", pady=2)
             ttk.Entry(frame, textvariable=az_var, width=8).grid(row=0, column=1, sticky="w", pady=2)
             ttk.Label(frame, text="Actual EL").grid(row=1, column=0, sticky="w", pady=2)
             ttk.Entry(frame, textvariable=el_var, width=8).grid(row=1, column=1, sticky="w", pady=2)
-            ttk.Button(frame, text="Calibrate", command=lambda n=name: self.calibrate(n)).grid(
-                row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+            ttk.Separator(frame, orient="horizontal").grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
+            ttk.Label(frame, text="AZ offset").grid(row=3, column=0, sticky="w", pady=2)
+            ttk.Entry(frame, textvariable=az_offset_var, width=8).grid(row=3, column=1, sticky="w", pady=2)
+            ttk.Label(frame, text="EL offset").grid(row=4, column=0, sticky="w", pady=2)
+            ttk.Entry(frame, textvariable=el_offset_var, width=8).grid(row=4, column=1, sticky="w", pady=2)
+            ttk.Button(frame, text="Calibrate Manual", command=lambda n=name: self.calibrate_manual(n)).grid(
+                row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0)
             )
-            self.entries[name] = (az_var, el_var)
+            ttk.Button(frame, text="Calibrate From Target", command=lambda n=name: self.calibrate_from_target(n)).grid(
+                row=6, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+            )
+            ttk.Button(frame, text="Apply Offsets", command=lambda n=name: self.apply_offsets(n)).grid(
+                row=7, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+            )
+            self.entries[name] = {
+                "actual_az": az_var,
+                "actual_el": el_var,
+                "az_offset": az_offset_var,
+                "el_offset": el_offset_var,
+            }
 
         buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         buttons.grid(row=1, column=0, sticky="ew")
         buttons.columnconfigure(0, weight=1)
         ttk.Button(buttons, text="Close", command=self.destroy).grid(row=0, column=1)
 
-    def calibrate(self, name: str) -> None:
+    def calibrate_manual(self, name: str) -> None:
+        values = self.entries[name]
+        try:
+            actual_az = float(values["actual_az"].get())
+            actual_el = float(values["actual_el"].get())
+        except ValueError:
+            messagebox.showerror("Calibration", "Actual AZ and EL must be numeric.", parent=self)
+            return
+        self.calibrate_to_position(name, actual_az, actual_el)
+
+    def calibrate_from_target(self, name: str) -> None:
+        target = self.app.current_target
+        if target is None:
+            messagebox.showerror("Calibration", "No current target is available.", parent=self)
+            return
+        self.calibrate_to_position(name, target.azimuth, target.elevation)
+
+    def calibrate_to_position(self, name: str, actual_az: float, actual_el: float) -> None:
         panel = self.app.panels.get(name)
         if not panel or not panel.session:
             messagebox.showerror("Calibration", f"{name} is not connected.", parent=self)
-            return
-        az_var, el_var = self.entries[name]
-        try:
-            actual_az = float(az_var.get())
-            actual_el = float(el_var.get())
-        except ValueError:
-            messagebox.showerror("Calibration", "Actual AZ and EL must be numeric.", parent=self)
             return
         if not (0.0 <= actual_az <= 360.0 and 0.0 <= actual_el <= 90.0):
             messagebox.showerror("Calibration", "Calibration AZ must be 0..360 and EL 0..90.", parent=self)
@@ -470,21 +502,68 @@ class CalibrationDialog(tk.Toplevel):
 
         self.app.run_worker(
             work,
-            lambda position, p=panel, av=az_var, ev=el_var: self.finish_calibration(p, av, ev, position),
+            lambda position, n=name, p=panel: self.finish_calibration(n, p, position),
+            lambda text: messagebox.showerror("Calibration", text, parent=self),
+        )
+
+    def apply_offsets(self, name: str) -> None:
+        panel = self.app.panels.get(name)
+        config = self.app.configs.get(name)
+        if config is None:
+            messagebox.showerror("Calibration", f"{name} has no config.", parent=self)
+            return
+        values = self.entries[name]
+        try:
+            az_offset = float(values["az_offset"].get())
+            el_offset = float(values["el_offset"].get())
+        except ValueError:
+            messagebox.showerror("Calibration", "Offsets must be numeric.", parent=self)
+            return
+        if not (-360.0 <= az_offset <= 360.0 and -90.0 <= el_offset <= 90.0):
+            messagebox.showerror("Calibration", "AZ offset must be -360..360 and EL offset -90..90.", parent=self)
+            return
+
+        def work() -> Optional[Position]:
+            config.calibration.az_offset = az_offset
+            config.calibration.el_offset = el_offset
+            self.app.save_config("Calibration offsets saved.")
+            if panel and panel.session:
+                with panel.session.lock:
+                    position = panel.session.read_position_locked()
+                    panel.session.update_oled("CAL")
+                    return position
+            return None
+
+        self.app.run_worker(
+            work,
+            lambda position, n=name, p=panel: self.finish_offset_apply(n, p, position),
             lambda text: messagebox.showerror("Calibration", text, parent=self),
         )
 
     def finish_calibration(
         self,
+        name: str,
         panel: "AntennaPanel",
-        az_var: tk.StringVar,
-        el_var: tk.StringVar,
         position: Position,
     ) -> None:
-        az_var.set(f"{position.azimuth:0.2f}")
-        el_var.set(f"{position.elevation:0.2f}")
+        values = self.entries[name]
+        values["actual_az"].set(f"{position.azimuth:0.2f}")
+        values["actual_el"].set(f"{position.elevation:0.2f}")
+        values["az_offset"].set(f"{panel.session.config.calibration.az_offset:0.2f}")
+        values["el_offset"].set(f"{panel.session.config.calibration.el_offset:0.2f}")
         panel.clear_message()
         panel.update_position(position)
+
+    def finish_offset_apply(self, name: str, panel: Optional["AntennaPanel"], position: Optional[Position]) -> None:
+        config = self.app.configs[name]
+        values = self.entries[name]
+        values["az_offset"].set(f"{config.calibration.az_offset:0.2f}")
+        values["el_offset"].set(f"{config.calibration.el_offset:0.2f}")
+        if panel and position:
+            values["actual_az"].set(f"{position.azimuth:0.2f}")
+            values["actual_el"].set(f"{position.elevation:0.2f}")
+            panel.clear_message()
+            panel.update_position(position)
 
 
 class EncodersDialog(tk.Toplevel):
@@ -1016,6 +1095,7 @@ class WT3App(tk.Tk):
         self.tracking_active = False
         self.parking_active = False
         self.tracking_kind = ""
+        self.current_target: Optional[TargetPosition] = None
         self.target_name_var = tk.StringVar(value="Target --")
         self.target_az_var = tk.StringVar(value="AZ --")
         self.target_el_var = tk.StringVar(value="EL --")
@@ -1365,6 +1445,7 @@ class WT3App(tk.Tk):
             raise RuntimeError("Longitude must be -180..180 degrees.")
 
     def apply_target_position(self, target: TargetPosition) -> None:
+        self.current_target = target
         self.target_name_var.set(target.name)
         self.target_az_var.set(f"AZ {target.azimuth:0.2f}")
         self.target_el_var.set(f"EL {target.elevation:0.2f}")

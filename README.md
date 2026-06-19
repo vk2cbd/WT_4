@@ -105,7 +105,7 @@ For each antenna:
 1. Point the antenna to a known physical position.
 2. Press `Calibration`.
 3. Enter the actual AZ and EL in the antenna tab.
-4. Press `Calibrate`.
+4. Press `Calibrate Manual`.
 
 The GUI reads the raw encoder positions and stores offsets in `wt3.ini`:
 
@@ -116,6 +116,14 @@ el_offset = ...
 
 Status then shows both raw and calibrated positions. Software limits use the
 calibrated position.
+
+The Calibration menu also shows the current AZ/EL offsets. These can be edited
+directly and applied with `Apply Offsets`.
+
+`Calibrate From Target` uses the current target shown on the main screen, such
+as Sun, Moon, or the active tracked source, and associates that target AZ/EL
+with the antenna's current physical pointing. Calibration AZ must be 0..360
+degrees and calibration EL must be 0..90 degrees.
 
 ## Encoder Scan
 
