@@ -1103,6 +1103,8 @@ class WT3App(tk.Tk):
         self.tracking_stop_event = threading.Event()
         self.park_stop_event = threading.Event()
         self.tracking_active = False
+        self.tracking_thread: Optional[threading.Thread] = None
+        self.tracking_last_update = 0.0
         self.parking_active = False
         self.tracking_kind = ""
         self.current_target: Optional[TargetPosition] = None
@@ -1247,8 +1249,10 @@ class WT3App(tk.Tk):
         self.tracking_stop_event.clear()
         self.tracking_active = True
         self.tracking_kind = kind
+        self.tracking_last_update = time.monotonic()
         self.status_var.set(f"Slewing to {self.kind_label(kind)}.")
-        threading.Thread(target=lambda: self.tracking_loop(kind), daemon=True).start()
+        self.tracking_thread = threading.Thread(target=lambda: self.tracking_loop(kind), daemon=True)
+        self.tracking_thread.start()
 
     def stop_sun_tracking(self) -> None:
         self.tracking_stop_event.set()
@@ -1369,11 +1373,13 @@ class WT3App(tk.Tk):
         try:
             while not self.tracking_stop_event.is_set():
                 target = self.current_tracking_target(kind)
+                self.tracking_last_update = time.monotonic()
                 self.events.put(("ok", self.apply_target_position, target))
                 if not acquired:
                     self.events.put(("ok", self.set_status, f"Slewing to {target.name}."))
                 self.slew_all_to_target(target, target.name[:8].upper(), show_slewing=not acquired)
                 acquired = True
+                self.tracking_last_update = time.monotonic()
                 self.events.put(("ok", self.finish_target_slew, target))
                 wait_until = time.monotonic() + max(0.1, self.site.track_interval_seconds)
                 while not self.tracking_stop_event.is_set() and time.monotonic() < wait_until:
@@ -1528,10 +1534,34 @@ class WT3App(tk.Tk):
             self.status_var.set(f"Tracking {target.name}.")
 
     def finish_tracking_fault(self, message: str) -> None:
+        self.tracking_stop_event.set()
+        self.tracking_active = False
         self.status_var.set(f"Tracking fault: {message}")
         for panel in self.panels.values():
             if panel.session and panel.status_var.get() in ("SLEWING", "TRACKING"):
                 panel.status_var.set("CONNECTED")
+
+    def refresh_tracking_target_display(self) -> None:
+        if not self.tracking_active or not self.tracking_kind:
+            return
+        try:
+            self.apply_target_position(self.current_tracking_target(self.tracking_kind))
+        except Exception as exc:
+            self.finish_tracking_fault(str(exc))
+
+    def check_tracking_watchdog(self) -> None:
+        if not self.tracking_active:
+            return
+        if self.tracking_thread and not self.tracking_thread.is_alive():
+            self.tracking_active = False
+            self.finish_tracking_fault("Tracking worker stopped unexpectedly.")
+            return
+        max_jog = max((session.config.limits.max_jog_seconds for session in self.sessions.values()), default=60.0)
+        timeout = max(15.0, max_jog + 5.0, self.site.track_interval_seconds * 3.0 + 5.0)
+        if time.monotonic() - self.tracking_last_update > timeout:
+            self.tracking_stop_event.set()
+            self.tracking_active = False
+            self.finish_tracking_fault(f"Tracking worker stalled for more than {timeout:0.1f}s.")
 
     def kind_label(self, kind: str) -> str:
         if kind == "sun":
@@ -1617,6 +1647,9 @@ class WT3App(tk.Tk):
     def periodic_refresh(self) -> None:
         if not self.tracking_active and not self.parking_active:
             self.refresh_all()
+        elif self.tracking_active:
+            self.refresh_tracking_target_display()
+            self.check_tracking_watchdog()
         self.update_reference_positions()
         self.after(1500, self.periodic_refresh)
 
