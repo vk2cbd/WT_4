@@ -196,6 +196,8 @@ class WinTrakController:
         timeout: float = 0.5,
         write_timeout: float = 0.5,
         open_delay: float = 2.5,
+        read_retries: int = 1,
+        retry_delay: float = 0.05,
         trace: Optional[Callable[[str, bytes], None]] = None,
     ) -> None:
         if serial is None:
@@ -210,6 +212,8 @@ class WinTrakController:
             write_timeout=write_timeout,
         )
         self.trace = trace
+        self.read_retries = max(0, int(read_retries))
+        self.retry_delay = max(0.0, float(retry_delay))
         if open_delay > 0:
             time.sleep(open_delay)
             self.serial.reset_input_buffer()
@@ -372,21 +376,35 @@ class WinTrakController:
         return int.from_bytes(reply, byteorder="big", signed=False) / 100.0
 
     def _write_read(self, command: bytes, reply_length: int) -> bytes:
-        self.serial.reset_input_buffer()
-        if self.trace:
-            self.trace("TX", command)
-        self.serial.write(command)
-        self.serial.flush()
         if reply_length == 0:
+            self.serial.reset_input_buffer()
+            if self.trace:
+                self.trace("TX", command)
+            self.serial.write(command)
+            self.serial.flush()
             return b""
-        reply = self.serial.read(reply_length)
-        if self.trace:
-            self.trace("RX", reply)
-        if len(reply) != reply_length:
-            raise WinTrakProtocolError(
-                f"Command {command.hex(' ')} expected {reply_length} byte(s), got {len(reply)}: {reply.hex(' ')}"
-            )
-        return reply
+
+        last_reply = b""
+        attempts = self.read_retries + 1
+        for attempt in range(attempts):
+            self.serial.reset_input_buffer()
+            if self.trace:
+                self.trace("TX", command)
+            self.serial.write(command)
+            self.serial.flush()
+            reply = self.serial.read(reply_length)
+            if self.trace:
+                self.trace("RX", reply)
+            if len(reply) == reply_length:
+                return reply
+            last_reply = reply
+            if attempt < attempts - 1 and self.retry_delay > 0:
+                time.sleep(self.retry_delay)
+
+        raise WinTrakProtocolError(
+            f"Command {command.hex(' ')} expected {reply_length} byte(s), got {len(last_reply)} "
+            f"after {attempts} attempt(s): {last_reply.hex(' ')}"
+        )
 
 
 class SafeAntenna:
