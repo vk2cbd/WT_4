@@ -8,7 +8,7 @@ before automatic tracking is safe:
 - one GUI controlling both antenna controllers
 - persistent per-antenna configuration
 - calibration offsets
-- calibrated and raw position display
+- calibrated position display, with raw encoder positions available in Calibration
 - software azimuth/elevation limits
 - guarded jogs that poll during movement
 - live GUI and OLED position updates during held jogs
@@ -90,7 +90,7 @@ python3 wt3_gui.py --config wt3.ini
 1. Check `wt3.ini` ports and limits.
 2. Start the GUI.
 3. Press `Connect`.
-4. Confirm raw and calibrated positions display for both antennas.
+4. Confirm calibrated positions display for both antennas.
 5. Confirm each controller OLED has populated with the current safety/status display.
 6. Use guarded press-and-hold jogs only after confirming the displayed positions are sensible.
 7. Press `Disconnect` before unplugging or changing controller wiring.
@@ -114,8 +114,9 @@ az_offset = ...
 el_offset = ...
 ```
 
-Status then shows both raw and calibrated positions. Software limits use the
-calibrated position.
+The main antenna panels show calibrated AZ/EL. The Calibration menu shows raw
+encoder positions and offset values. Software limits use the calibrated
+position.
 
 The Calibration menu also shows the current AZ/EL offsets. These can be edited
 directly and applied with `Apply Offsets`.

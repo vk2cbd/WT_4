@@ -432,11 +432,15 @@ class CalibrationDialog(tk.Toplevel):
             tabs.add(frame, text=name)
             az_var = tk.StringVar()
             el_var = tk.StringVar()
+            raw_az_var = tk.StringVar(value="--")
+            raw_el_var = tk.StringVar(value="--")
             az_offset_var = tk.StringVar()
             el_offset_var = tk.StringVar()
             if panel.session and panel.session.last_position:
                 az_var.set(f"{panel.session.last_position.azimuth:0.2f}")
                 el_var.set(f"{panel.session.last_position.elevation:0.2f}")
+                raw_az_var.set(f"{panel.session.last_position.raw_azimuth:0.2f}")
+                raw_el_var.set(f"{panel.session.last_position.raw_elevation:0.2f}")
             config = panel.config or app.configs.get(name)
             if config:
                 az_offset_var.set(f"{config.calibration.az_offset:0.2f}")
@@ -446,22 +450,29 @@ class CalibrationDialog(tk.Toplevel):
             ttk.Label(frame, text="Actual EL").grid(row=1, column=0, sticky="w", pady=2)
             ttk.Entry(frame, textvariable=el_var, width=8).grid(row=1, column=1, sticky="w", pady=2)
             ttk.Separator(frame, orient="horizontal").grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
-            ttk.Label(frame, text="AZ offset").grid(row=3, column=0, sticky="w", pady=2)
-            ttk.Entry(frame, textvariable=az_offset_var, width=8).grid(row=3, column=1, sticky="w", pady=2)
-            ttk.Label(frame, text="EL offset").grid(row=4, column=0, sticky="w", pady=2)
-            ttk.Entry(frame, textvariable=el_offset_var, width=8).grid(row=4, column=1, sticky="w", pady=2)
+            ttk.Label(frame, text="Raw AZ").grid(row=3, column=0, sticky="w", pady=2)
+            ttk.Label(frame, textvariable=raw_az_var).grid(row=3, column=1, sticky="w", pady=2)
+            ttk.Label(frame, text="Raw EL").grid(row=4, column=0, sticky="w", pady=2)
+            ttk.Label(frame, textvariable=raw_el_var).grid(row=4, column=1, sticky="w", pady=2)
+            ttk.Separator(frame, orient="horizontal").grid(row=5, column=0, columnspan=2, sticky="ew", pady=8)
+            ttk.Label(frame, text="AZ offset").grid(row=6, column=0, sticky="w", pady=2)
+            ttk.Entry(frame, textvariable=az_offset_var, width=8).grid(row=6, column=1, sticky="w", pady=2)
+            ttk.Label(frame, text="EL offset").grid(row=7, column=0, sticky="w", pady=2)
+            ttk.Entry(frame, textvariable=el_offset_var, width=8).grid(row=7, column=1, sticky="w", pady=2)
             ttk.Button(frame, text="Calibrate Manual", command=lambda n=name: self.calibrate_manual(n)).grid(
-                row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+                row=8, column=0, columnspan=2, sticky="ew", pady=(8, 0)
             )
             ttk.Button(frame, text="Calibrate From Target", command=lambda n=name: self.calibrate_from_target(n)).grid(
-                row=6, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+                row=9, column=0, columnspan=2, sticky="ew", pady=(6, 0)
             )
             ttk.Button(frame, text="Apply Offsets", command=lambda n=name: self.apply_offsets(n)).grid(
-                row=7, column=0, columnspan=2, sticky="ew", pady=(6, 0)
+                row=10, column=0, columnspan=2, sticky="ew", pady=(6, 0)
             )
             self.entries[name] = {
                 "actual_az": az_var,
                 "actual_el": el_var,
+                "raw_az": raw_az_var,
+                "raw_el": raw_el_var,
                 "az_offset": az_offset_var,
                 "el_offset": el_offset_var,
             }
@@ -552,6 +563,8 @@ class CalibrationDialog(tk.Toplevel):
         values = self.entries[name]
         values["actual_az"].set(f"{position.azimuth:0.2f}")
         values["actual_el"].set(f"{position.elevation:0.2f}")
+        values["raw_az"].set(f"{position.raw_azimuth:0.2f}")
+        values["raw_el"].set(f"{position.raw_elevation:0.2f}")
         values["az_offset"].set(f"{panel.session.config.calibration.az_offset:0.2f}")
         values["el_offset"].set(f"{panel.session.config.calibration.el_offset:0.2f}")
         panel.clear_message()
@@ -565,6 +578,8 @@ class CalibrationDialog(tk.Toplevel):
         if panel and position:
             values["actual_az"].set(f"{position.azimuth:0.2f}")
             values["actual_el"].set(f"{position.elevation:0.2f}")
+            values["raw_az"].set(f"{position.raw_azimuth:0.2f}")
+            values["raw_el"].set(f"{position.raw_elevation:0.2f}")
             panel.clear_message()
             panel.update_position(position)
 
@@ -876,8 +891,6 @@ class AntennaPanel(ttk.Frame):
         self.stop_event = threading.Event()
 
         self.status_var = tk.StringVar(value="DISCONNECTED")
-        self.raw_az_var = tk.StringVar(value="--")
-        self.raw_el_var = tk.StringVar(value="--")
         self.cal_az_var = tk.StringVar(value="--")
         self.cal_el_var = tk.StringVar(value="--")
         self.fault_var = tk.StringVar(value="")
@@ -896,12 +909,10 @@ class AntennaPanel(ttk.Frame):
 
         position_frame = ttk.Frame(self)
         position_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 0))
-        for col in range(4):
+        for col in range(2):
             position_frame.columnconfigure(col, weight=1)
-        self._position_cell(position_frame, 0, 0, "Raw AZ", self.raw_az_var)
-        self._position_cell(position_frame, 0, 2, "Raw EL", self.raw_el_var)
-        self._position_cell(position_frame, 1, 0, "Cal AZ", self.cal_az_var)
-        self._position_cell(position_frame, 1, 2, "Cal EL", self.cal_el_var)
+        self._position_cell(position_frame, 0, 0, "AZ", self.cal_az_var)
+        self._position_cell(position_frame, 1, 0, "EL", self.cal_el_var)
 
         control = ttk.LabelFrame(self, text="Manual")
         control.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 0))
@@ -920,7 +931,7 @@ class AntennaPanel(ttk.Frame):
 
     def _position_cell(self, parent: tk.Misc, row: int, column: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=column, sticky="w", padx=(0, 4))
-        ttk.Label(parent, textvariable=variable, font=("TkDefaultFont", 11, "bold")).grid(
+        ttk.Label(parent, textvariable=variable, font=("TkDefaultFont", 13)).grid(
             row=row, column=column + 1, sticky="e", padx=(0, 8)
         )
 
@@ -963,8 +974,6 @@ class AntennaPanel(ttk.Frame):
         self.clear_position_fields()
 
     def clear_position_fields(self) -> None:
-        self.raw_az_var.set("--")
-        self.raw_el_var.set("--")
         self.cal_az_var.set("--")
         self.cal_el_var.set("--")
 
@@ -980,8 +989,6 @@ class AntennaPanel(ttk.Frame):
     def update_position(self, position: Optional[Position]) -> None:
         if position is None:
             return
-        self.raw_az_var.set(f"{position.raw_azimuth:0.2f}")
-        self.raw_el_var.set(f"{position.raw_elevation:0.2f}")
         self.cal_az_var.set(f"{position.azimuth:0.2f}")
         self.cal_el_var.set(f"{position.elevation:0.2f}")
 
