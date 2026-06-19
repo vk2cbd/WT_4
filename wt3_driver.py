@@ -531,10 +531,8 @@ class SafeAntenna:
         target_azimuth = normalize_degrees(target_azimuth)
         az_start_tolerance = max(0.01, abs(float(az_start_tolerance)))
         el_start_tolerance = max(0.01, abs(float(el_start_tolerance)))
-        az_stop_tolerance = max(0.01, abs(float(az_start_tolerance if az_stop_tolerance is None else az_stop_tolerance)))
-        el_stop_tolerance = max(0.01, abs(float(el_start_tolerance if el_stop_tolerance is None else el_stop_tolerance)))
-        az_stop_tolerance = min(az_stop_tolerance, az_start_tolerance)
-        el_stop_tolerance = min(el_stop_tolerance, el_start_tolerance)
+        az_stop_tolerance = _clamp_signed_stop_tolerance(az_stop_tolerance, az_start_tolerance)
+        el_stop_tolerance = _clamp_signed_stop_tolerance(el_stop_tolerance, el_start_tolerance)
         az_slow_threshold = max(az_start_tolerance, float(az_slow_threshold))
         el_slow_threshold = max(el_start_tolerance, float(el_slow_threshold))
         az_fast_speed = clamp_speed(az_speed)
@@ -551,8 +549,8 @@ class SafeAntenna:
             active[Axis.AZIMUTH] = {
                 "direction": Direction.AZ_CW if az_error > 0 else Direction.AZ_CCW,
                 "target": target_azimuth,
-                "previous_error": az_error,
                 "tolerance": az_stop_tolerance,
+                "direction_sign": 1.0 if az_error > 0.0 else -1.0,
                 "fast_speed": az_fast_speed,
                 "slow_speed": az_slow_speed,
                 "slow_threshold": az_slow_threshold,
@@ -562,8 +560,8 @@ class SafeAntenna:
             active[Axis.ELEVATION] = {
                 "direction": Direction.EL_UP if el_error > 0 else Direction.EL_DOWN,
                 "target": target_elevation,
-                "previous_error": el_error,
                 "tolerance": el_stop_tolerance,
+                "direction_sign": 1.0 if el_error > 0.0 else -1.0,
                 "fast_speed": el_fast_speed,
                 "slow_speed": el_slow_speed,
                 "slow_threshold": el_slow_threshold,
@@ -598,15 +596,13 @@ class SafeAntenna:
                             if axis == Axis.AZIMUTH
                             else target - pos.elevation
                         )
-                        previous_error = state["previous_error"]
-                        if abs(error) <= tolerance or _crossed_target(previous_error, error):
+                        if _reached_stop_tolerance(error, tolerance, state["direction_sign"]):
                             self._stop_axis(axis)
                             active.pop(axis)
                             continue
                         if not state["slow"] and abs(error) <= slow_threshold:
                             self._set_axis_direction_speed(axis, direction, slow_speed)
                             state["slow"] = True
-                        state["previous_error"] = error
                 if update_callback:
                     update_callback(pos)
             if active and not stop_event.is_set():
@@ -683,8 +679,19 @@ def clockwise_angle_delta(start: float, end: float) -> float:
     return (normalize_degrees(end) - normalize_degrees(start)) % 360.0
 
 
-def _crossed_target(previous_error: float, current_error: float) -> bool:
-    return (previous_error < 0.0 < current_error) or (previous_error > 0.0 > current_error)
+def _clamp_signed_stop_tolerance(stop_tolerance: Optional[float], start_tolerance: float) -> float:
+    if stop_tolerance is None:
+        return start_tolerance
+    stop_tolerance = float(stop_tolerance)
+    if stop_tolerance == 0.0:
+        return 0.0
+    sign = 1.0 if stop_tolerance > 0.0 else -1.0
+    magnitude = min(max(0.01, abs(stop_tolerance)), start_tolerance)
+    return sign * magnitude
+
+
+def _reached_stop_tolerance(current_error: float, stop_tolerance: float, direction_sign: float) -> bool:
+    return current_error * direction_sign <= stop_tolerance
 
 
 def clamp_speed(speed: int) -> int:

@@ -294,8 +294,9 @@ el_slow_threshold_degrees = 3.0
 
 The track tolerance values are start tolerances: an axis does not move until its
 error is larger than that axis' start tolerance. Once an axis has started moving,
-it stops when it reaches that axis' stop tolerance. This gives the tracking loop
-a deliberate hysteresis band to reduce short repeated starts.
+it stops when it reaches that axis' signed stop tolerance. Positive stop
+tolerance stops before/at the target band; negative stop tolerance intentionally
+continues through the target and stops after passing it by that amount.
 
 When an axis is within its slow-degree value, WT3 changes that axis to its slow
 speed until it reaches that axis' stop tolerance.
@@ -307,8 +308,8 @@ than the matching antenna tracking speed.
 `Interval` is limited to 0.1..10.0 seconds in 0.1 second steps. Each axis start
 tolerance is limited to +/-0.01..0.20 degrees in 0.01 degree steps. A negative
 start tolerance leads the target on that axis by that amount. Each stop
-tolerance is positive and must be no larger than the absolute value of the
-matching start tolerance.
+tolerance is limited to +/-0.01 degrees up to the absolute value of the matching
+start tolerance.
 
 Use low speed for the first tests and confirm the displayed target AZ/EL is
 reasonable before allowing larger slews.

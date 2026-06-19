@@ -758,12 +758,12 @@ class TrackingDialog(tk.Toplevel):
         ttk.Label(body, text="Slow deg").grid(row=2, column=4, sticky="w")
         ttk.Label(body, text="AZ").grid(row=3, column=0, sticky="w", pady=2)
         self._spin_only(body, self.az_tolerance_var, 3, 1, -0.20, 0.20, 0.01, width=7)
-        self._spin_only(body, self.az_stop_tolerance_var, 3, 2, 0.01, 0.20, 0.01, width=7)
+        self._spin_only(body, self.az_stop_tolerance_var, 3, 2, -0.20, 0.20, 0.01, width=7)
         ttk.Entry(body, textvariable=self.az_slow_speed_var, width=7).grid(row=3, column=3, sticky="w", pady=2)
         ttk.Entry(body, textvariable=self.az_slow_threshold_var, width=7).grid(row=3, column=4, sticky="w", pady=2)
         ttk.Label(body, text="EL").grid(row=4, column=0, sticky="w", pady=2)
         self._spin_only(body, self.el_tolerance_var, 4, 1, -0.20, 0.20, 0.01, width=7)
-        self._spin_only(body, self.el_stop_tolerance_var, 4, 2, 0.01, 0.20, 0.01, width=7)
+        self._spin_only(body, self.el_stop_tolerance_var, 4, 2, -0.20, 0.20, 0.01, width=7)
         ttk.Entry(body, textvariable=self.el_slow_speed_var, width=7).grid(row=4, column=3, sticky="w", pady=2)
         ttk.Entry(body, textvariable=self.el_slow_threshold_var, width=7).grid(row=4, column=4, sticky="w", pady=2)
 
@@ -1479,8 +1479,8 @@ class WT3App(tk.Tk):
     ) -> None:
         if not (-0.2 <= start_tolerance <= 0.2) or start_tolerance == 0.0:
             raise RuntimeError(f"{axis} start tolerance must be -0.20..-0.01 or 0.01..0.20 degrees.")
-        if not (0.01 <= stop_tolerance <= abs(start_tolerance)):
-            raise RuntimeError(f"{axis} stop tolerance must be 0.01 degrees up to the start tolerance.")
+        if not (-abs(start_tolerance) <= stop_tolerance <= abs(start_tolerance)) or stop_tolerance == 0.0:
+            raise RuntimeError(f"{axis} stop tolerance must be +/-0.01 degrees up to the start tolerance.")
         if not (1 <= slow_speed <= 100):
             raise RuntimeError(f"{axis} slow speed must be 1..100.")
         if not (abs(start_tolerance) <= slow_threshold <= 30.0):
