@@ -27,6 +27,9 @@ from wt3_driver import AntennaConfig, Axis, Direction, EncoderInfo, Position, Sa
 from wt3_solar import sun_position
 
 
+APP_VERSION = "v3.0"
+
+
 class LimitsDialog(tk.Toplevel):
     def __init__(self, app: "WT3App") -> None:
         super().__init__(app)
@@ -1082,7 +1085,7 @@ class AntennaPanel(ttk.Frame):
 class WT3App(tk.Tk):
     def __init__(self, config_path: str) -> None:
         super().__init__()
-        self.title("WT3 Antenna Controller")
+        self.title(f"WT3 Antenna Controller {APP_VERSION}")
         self.geometry("840x500")
         self.config_path = config_path
         self.configs = load_configs(config_path)
