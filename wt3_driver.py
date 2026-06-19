@@ -349,6 +349,9 @@ class WinTrakController:
         self.oled_write(0xF0, 3, 6, f"{(target_azimuth if target_azimuth is not None else position.azimuth):6.2f}", width=6)
         self.oled_write(0xF1, 3, 7, f"{(target_elevation if target_elevation is not None else position.elevation):6.2f}", width=6)
 
+    def oled_activity(self, activity: str) -> None:
+        self.oled_write(0xF0, 0, 3, activity.upper(), width=8)
+
     def _move(self, axis: Axis, channel: int, speed: int) -> None:
         mapping = AXIS_MAPS[axis]
         self._set_speed(axis, mapping.positive_channel, 0)
@@ -646,6 +649,10 @@ class SafeAntenna:
         with self.lock:
             pos = self.last_position or self.read_position_locked()
             self.controller.oled_position(pos, target_azimuth, target_elevation, activity)
+
+    def update_oled_activity(self, activity: str) -> None:
+        with self.lock:
+            self.controller.oled_activity(activity)
 
     def _start_direction(self, direction: Direction, speed: int) -> None:
         if direction == Direction.AZ_CW:

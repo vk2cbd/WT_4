@@ -1694,7 +1694,7 @@ class WT3App(tk.Tk):
                 panel.status_var.set("STOPPED")
         for session in self.sessions.values():
             self.run_worker(
-                lambda s=session: (s.stop_all(), s.update_oled("MANUAL", activity="STOPPED")),
+                lambda s=session: (s.stop_all(), s.update_oled_activity("STOPPED")),
                 lambda _result: None,
                 self.set_status,
             )
