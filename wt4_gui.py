@@ -2131,8 +2131,8 @@ class WT4App(tk.Tk):
     def __init__(self, config_path: str) -> None:
         super().__init__()
         self.title(f"WT4 Antenna Controller {APP_VERSION}")
-        self.geometry("900x620")
-        self.minsize(860, 580)
+        self.geometry("980x645")
+        self.minsize(960, 620)
         self.config_path = config_path
         self.configs = load_configs(config_path)
         self.site = load_site_config(config_path)
