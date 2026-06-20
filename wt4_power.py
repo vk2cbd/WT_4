@@ -97,10 +97,6 @@ class RtlSdrDevice:
             self._lib.rtlsdr_close(self._dev)
             self._dev = ctypes.c_void_p()
 
-    def cancel(self) -> None:
-        if self._dev:
-            self._lib.rtlsdr_cancel_async(self._dev)
-
     def __enter__(self) -> "RtlSdrDevice":
         return self
 
@@ -144,9 +140,6 @@ class RtlPowerMeter:
 
     def close(self) -> None:
         self.device.close()
-
-    def cancel(self) -> None:
-        self.device.cancel()
 
     def __enter__(self) -> "RtlPowerMeter":
         return self
@@ -194,5 +187,3 @@ def _configure_librtlsdr_api(lib) -> None:
     lib.rtlsdr_reset_buffer.restype = ctypes.c_int
     lib.rtlsdr_read_sync.argtypes = [dev_p, ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
     lib.rtlsdr_read_sync.restype = ctypes.c_int
-    lib.rtlsdr_cancel_async.argtypes = [dev_p]
-    lib.rtlsdr_cancel_async.restype = ctypes.c_int
