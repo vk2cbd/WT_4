@@ -120,16 +120,21 @@ The power-meter module currently provides:
 - a relative dBFS power calculation helper
 - synchronous RTL-SDR sample capture using `librtlsdr`
 
-The main GUI also includes a compact RTL Power Meter panel. Set frequency,
-sample rate in samples/second, gain, samples/read, GUI refresh rate, averaging,
-and warm-up seconds, then press `Start Power`. `Sample sps` sets the RTL sample rate and
+The main GUI also includes a compact RTL Power Meter panel. Set frequency in
+MHz, sample rate in ksps, gain, samples/read, GUI refresh rate, averaging, and
+warm-up seconds, then press `Start Power`. `Sample ksps` sets the RTL sample rate and
 therefore the approximate RF bandwidth accepted by the dongle/driver. `GUI Hz`
 sets the desired power display refresh rate. Set `Samples` to `auto` or `0` to calculate samples/read from
-`Sample sps / GUI Hz`. The displayed value is relative dBFS; less-negative
+the converted sample rate divided by `GUI Hz`. The displayed value is relative dBFS; less-negative
 values mean stronger received power. Power-meter settings are saved in
 `wt4.ini` when the meter starts or the GUI closes. During warm-up the live
 reading is shown, but the status remains `Warming` until the configured settling
 time has elapsed, then changes to `Ready`.
+
+Use `Start Log` to write a timestamped `wt4_power_YYYYMMDD-HHMMSS.csv` file
+containing power, target position, and the latest antenna positions. This is the
+first step toward source sweep calibration; it is passive and does not command
+the antennas.
 
 ## First Use
 

@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import queue
 import threading
 import time
 import tkinter as tk
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Optional
 
@@ -1531,24 +1533,29 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.last_reading_time = 0.0
         self.power_started_at = 0.0
         self.warmup_seconds = 0.0
+        self.history_values: list[float] = []
+        self.log_handle = None
+        self.log_writer: Optional[csv.writer] = None
+        self.log_path: Optional[Path] = None
 
         power = app.power_config
-        self.freq_var = tk.StringVar(value=str(power.center_frequency_hz))
-        self.rate_var = tk.StringVar(value=str(power.sample_rate_hz))
+        self.freq_var = tk.StringVar(value=f"{power.center_frequency_hz / 1_000_000:0.1f}")
+        self.rate_var = tk.StringVar(value=f"{power.sample_rate_hz / 1000:0.0f}")
         self.gain_var = tk.StringVar(value=power.gain_db)
         self.samples_var = tk.StringVar(value=power.samples_per_read)
-        self.update_var = tk.StringVar(value=f"{power.update_rate_hz:0.1f}")
+        self.update_var = tk.StringVar(value=f"{power.update_rate_hz:0.0f}")
         self.smooth_var = tk.StringVar(value=str(power.smoothing_samples))
         self.warmup_var = tk.StringVar(value=f"{power.warmup_seconds:0.0f}")
         self.power_var = tk.StringVar(value="--.- dBFS")
         self.status_var = tk.StringVar(value="Stopped")
+        self.stats_var = tk.StringVar(value="Avg -- Min -- Max --")
 
         fields = ttk.Frame(self)
         fields.grid(row=0, column=0, sticky="ew")
         for column in range(14):
             fields.columnconfigure(column, weight=1 if column % 2 else 0)
-        self._entry(fields, "Freq", self.freq_var, 0, width=11)
-        self._entry(fields, "Sample sps", self.rate_var, 2, width=8)
+        self._entry(fields, "Freq MHz", self.freq_var, 0, width=7)
+        self._entry(fields, "Sample ksps", self.rate_var, 2, width=6)
         self._entry(fields, "Gain", self.gain_var, 4, width=6)
         self._entry(fields, "Samples", self.samples_var, 6, width=7)
         self._entry(fields, "GUI Hz", self.update_var, 8, width=5)
@@ -1559,17 +1566,22 @@ class PowerMeterPanel(ttk.LabelFrame):
         controls.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         ttk.Button(controls, text="Start Power", command=self.start).pack(side="left")
         ttk.Button(controls, text="Stop Power", command=self.stop).pack(side="left", padx=(6, 0))
+        ttk.Button(controls, text="Start Log", command=self.start_log).pack(side="left", padx=(6, 0))
+        ttk.Button(controls, text="Stop Log", command=self.stop_log).pack(side="left", padx=(6, 0))
         ttk.Label(controls, textvariable=self.power_var, font=("TkDefaultFont", 13)).pack(side="left", padx=(18, 0))
         ttk.Label(controls, textvariable=self.status_var).pack(side="left", padx=(14, 0))
+        ttk.Label(controls, textvariable=self.stats_var).pack(side="left", padx=(14, 0))
 
     def _entry(self, parent: tk.Misc, label: str, variable: tk.StringVar, column: int, width: int) -> None:
         ttk.Label(parent, text=label).grid(row=0, column=column, sticky="w", padx=(0, 2))
         ttk.Entry(parent, textvariable=variable, width=width).grid(row=0, column=column + 1, sticky="w", padx=(0, 8))
 
     def power_config_from_fields(self) -> PowerConfig:
+        freq_hz = int(round(float(self.freq_var.get()) * 1_000_000))
+        sample_rate_hz = int(round(float(self.rate_var.get()) * 1000))
         return PowerConfig(
-            center_frequency_hz=int(self.freq_var.get()),
-            sample_rate_hz=int(self.rate_var.get()),
+            center_frequency_hz=freq_hz,
+            sample_rate_hz=sample_rate_hz,
             gain_db=self.gain_var.get().strip() or "auto",
             samples_per_read=self.samples_var.get().strip() or "auto",
             update_rate_hz=float(self.update_var.get()),
@@ -1602,6 +1614,77 @@ class PowerMeterPanel(ttk.LabelFrame):
             return
         save_power_config(self.app.config_path, self.app.power_config)
 
+    def format_fields(self, power: PowerConfig) -> None:
+        self.freq_var.set(f"{power.center_frequency_hz / 1_000_000:0.1f}")
+        self.rate_var.set(f"{power.sample_rate_hz / 1000:0.0f}")
+        self.update_var.set(f"{power.update_rate_hz:0.0f}")
+        self.smooth_var.set(str(power.smoothing_samples))
+        self.warmup_var.set(f"{power.warmup_seconds:0.0f}")
+
+    def start_log(self) -> None:
+        if self.log_writer:
+            self.status_var.set(f"Logging {self.log_path.name if self.log_path else ''}".strip())
+            return
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.log_path = Path(f"wt4_power_{timestamp}.csv")
+        self.log_handle = self.log_path.open("w", newline="", encoding="utf-8")
+        self.log_writer = csv.writer(self.log_handle)
+        self.log_writer.writerow(self.log_header())
+        self.status_var.set(f"Logging {self.log_path.name}")
+
+    def stop_log(self) -> None:
+        if self.log_handle:
+            self.log_handle.close()
+        self.log_handle = None
+        self.log_writer = None
+        self.log_path = None
+        if not (self.thread and self.thread.is_alive()):
+            self.status_var.set("Stopped")
+
+    def log_header(self) -> list[str]:
+        header = [
+            "local_time",
+            "utc_time",
+            "power_dbfs",
+            "target_name",
+            "target_az",
+            "target_el",
+        ]
+        for name in self.app.panels:
+            header.extend([f"{name}_az", f"{name}_el", f"{name}_raw_az", f"{name}_raw_el"])
+        return header
+
+    def log_reading(self, power_dbfs: float) -> None:
+        if not self.log_writer:
+            return
+        now_local = datetime.now().astimezone()
+        now_utc = datetime.now(timezone.utc)
+        target = self.app.current_target
+        row: list[object] = [
+            now_local.isoformat(timespec="milliseconds"),
+            now_utc.isoformat(timespec="milliseconds"),
+            f"{power_dbfs:0.2f}",
+            self.app.target_name_var.get().replace("Target ", ""),
+            f"{target.azimuth:0.3f}" if target else "",
+            f"{target.elevation:0.3f}" if target else "",
+        ]
+        for panel in self.app.panels.values():
+            position = panel.session.last_position if panel.session else None
+            if position:
+                row.extend(
+                    [
+                        f"{position.azimuth:0.3f}",
+                        f"{position.elevation:0.3f}",
+                        f"{position.raw_azimuth:0.3f}",
+                        f"{position.raw_elevation:0.3f}",
+                    ]
+                )
+            else:
+                row.extend(["", "", "", ""])
+        self.log_writer.writerow(row)
+        if self.log_handle:
+            self.log_handle.flush()
+
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
             if self.last_reading_time and time.monotonic() - self.last_reading_time < 2.0:
@@ -1616,12 +1699,15 @@ class PowerMeterPanel(ttk.LabelFrame):
             self.status_var.set(str(exc))
             return
         self.app.power_config = power_config
+        self.format_fields(power_config)
         save_power_config(self.app.config_path, self.app.power_config)
         self.power_values.clear()
+        self.history_values.clear()
         self.last_reading_time = 0.0
         self.power_started_at = time.monotonic()
         self.warmup_seconds = power_config.warmup_seconds
         self.power_var.set("--.- dBFS")
+        self.stats_var.set("Avg -- Min -- Max --")
         self.stop_event.clear()
         self.status_var.set(f"Starting... {config.samples_per_update} samples/read")
         self.thread = threading.Thread(target=self.power_loop, args=(config,), daemon=True)
@@ -1664,6 +1750,13 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.power_values = self.power_values[-smoothing:]
         average = sum(self.power_values) / len(self.power_values)
         self.power_var.set(f"{average:0.1f} dBFS")
+        self.history_values.append(average)
+        self.history_values = self.history_values[-600:]
+        history_average = sum(self.history_values) / len(self.history_values)
+        self.stats_var.set(
+            f"Avg {history_average:0.1f} Min {min(self.history_values):0.1f} Max {max(self.history_values):0.1f}"
+        )
+        self.log_reading(average)
         self.refresh_warmup_status(None)
 
     def refresh_warmup_status(self, _unused: object) -> None:
@@ -1682,8 +1775,10 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.thread = None
         if self.stop_event.is_set():
             self.power_values.clear()
+            self.history_values.clear()
             self.last_reading_time = 0.0
             self.power_var.set("--.- dBFS")
+            self.stats_var.set("Avg -- Min -- Max --")
             self.status_var.set("Stopped")
 
 
@@ -1691,7 +1786,8 @@ class WT4App(tk.Tk):
     def __init__(self, config_path: str) -> None:
         super().__init__()
         self.title(f"WT4 Antenna Controller {APP_VERSION}")
-        self.geometry("840x500")
+        self.geometry("900x620")
+        self.minsize(860, 580)
         self.config_path = config_path
         self.configs = load_configs(config_path)
         self.site = load_site_config(config_path)
@@ -2434,6 +2530,7 @@ class WT4App(tk.Tk):
     def on_close(self) -> None:
         try:
             self.power_panel.save_settings()
+            self.power_panel.stop_log()
             self.power_panel.stop()
             self.stop_all()
             for session in self.sessions.values():
