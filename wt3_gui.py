@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from tkinter import messagebox, ttk
 from typing import Optional
 
-from wt3_astro import TargetPosition, local_sidereal_time, moon_position, source_position
+from wt3_astro import TargetPosition, local_sidereal_time, moon_equatorial, moon_position, source_position
 from wt3_config import (
     SiteConfig,
     SourceConfig,
@@ -24,7 +24,7 @@ from wt3_config import (
     save_sources,
 )
 from wt3_driver import AntennaConfig, Axis, Direction, EncoderInfo, Position, SafeAntenna, shortest_angle_delta
-from wt3_solar import sun_position
+from wt3_solar import sun_equatorial, sun_position
 
 
 APP_VERSION = "v3.0"
@@ -1949,24 +1949,37 @@ class WT3App(tk.Tk):
         self.target_name_var.set(target.name)
         self.target_az_var.set(f"AZ {target.azimuth:0.2f}")
         self.target_el_var.set(f"EL {target.elevation:0.2f}")
-        self.target_ha_var.set(self.current_source_hour_angle_text())
+        self.target_ha_var.set(self.current_hour_angle_text())
 
-    def current_source_hour_angle_text(self) -> str:
-        if self.tracking_kind != "source":
-            return "HA --"
+    def current_hour_angle_text(self) -> str:
+        now = datetime.now(timezone.utc)
         try:
-            source = self.selected_source()
+            if self.tracking_kind == "sun":
+                ra_hours = sun_equatorial(now).ra_hours
+            elif self.tracking_kind == "moon":
+                ra_hours = moon_equatorial(now)[0].ra_hours
+            elif self.tracking_kind == "source":
+                ra_hours = self.selected_source().ra_hours
+            else:
+                return "HA --"
         except RuntimeError:
             return "HA --"
-        hour_angle_degrees = local_sidereal_time(self.site.longitude, datetime.now(timezone.utc)) - source.ra_hours * 15.0
-        while hour_angle_degrees <= -180.0:
-            hour_angle_degrees += 360.0
-        while hour_angle_degrees > 180.0:
-            hour_angle_degrees -= 360.0
+        hour_angle_degrees = local_sidereal_time(self.site.longitude, now) - ra_hours * 15.0
+        hour_angle_degrees = self.wrap_signed_degrees(hour_angle_degrees)
+        return f"HA {self.format_hour_angle(hour_angle_degrees)}"
+
+    def wrap_signed_degrees(self, value: float) -> float:
+        while value <= -180.0:
+            value += 360.0
+        while value > 180.0:
+            value -= 360.0
+        return value
+
+    def format_hour_angle(self, hour_angle_degrees: float) -> str:
         sign = "+" if hour_angle_degrees >= 0.0 else "-"
         total_minutes = int(round(abs(hour_angle_degrees) / 15.0 * 60.0))
         hours, minutes = divmod(total_minutes, 60)
-        return f"HA {sign}{hours:02d}:{minutes:02d}"
+        return f"{sign}{hours:02d}:{minutes:02d}"
 
     def slew_all_to_target(self, target: TargetPosition, mode: str, show_slewing: bool = True) -> TargetPosition:
         errors: list[str] = []

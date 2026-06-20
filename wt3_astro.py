@@ -16,6 +16,12 @@ class TargetPosition:
     elevation: float
 
 
+@dataclass(frozen=True)
+class EquatorialPosition:
+    ra_hours: float
+    dec_degrees: float
+
+
 def source_position(
     name: str,
     ra_hours: float,
@@ -35,6 +41,24 @@ def moon_position(latitude: float, longitude: float, when: Optional[datetime] = 
     annual-equation, and node corrections, then applies a topocentric parallax
     correction. It is intended for antenna pointing without an online ephemeris.
     """
+    if when is None:
+        when = datetime.now(timezone.utc)
+    when = when.astimezone(timezone.utc)
+    equatorial, distance = moon_equatorial(when)
+
+    azimuth, elevation = equatorial_to_horizontal(
+        equatorial.ra_hours,
+        equatorial.dec_degrees,
+        latitude,
+        longitude,
+        when,
+    )
+    parallax = _deg(math.asin(1.0 / distance))
+    elevation -= parallax * math.cos(_rad(elevation))
+    return TargetPosition(name="Moon", azimuth=azimuth, elevation=elevation)
+
+
+def moon_equatorial(when: Optional[datetime] = None) -> tuple[EquatorialPosition, float]:
     if when is None:
         when = datetime.now(timezone.utc)
     when = when.astimezone(timezone.utc)
@@ -109,11 +133,7 @@ def moon_position(latitude: float, longitude: float, when: Optional[datetime] = 
     zeq = ye * math.sin(_rad(obliquity)) + ze * math.cos(_rad(obliquity))
     ra = _wrap_degrees(_deg(math.atan2(yeq, xeq))) / 15.0
     dec = _deg(math.atan2(zeq, math.sqrt(xeq * xeq + yeq * yeq)))
-
-    azimuth, elevation = equatorial_to_horizontal(ra, dec, latitude, longitude, when)
-    parallax = _deg(math.asin(1.0 / distance))
-    elevation -= parallax * math.cos(_rad(elevation))
-    return TargetPosition(name="Moon", azimuth=azimuth, elevation=elevation)
+    return EquatorialPosition(ra, dec), distance
 
 
 def equatorial_to_horizontal(
