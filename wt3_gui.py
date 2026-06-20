@@ -444,12 +444,13 @@ class CalibrationDialog(tk.Toplevel):
             raw_el_var = tk.StringVar(value="--")
             az_offset_var = tk.StringVar()
             el_offset_var = tk.StringVar()
-            if panel.session and panel.session.last_position:
-                az_var.set(f"{panel.session.last_position.azimuth:0.2f}")
-                el_var.set(f"{panel.session.last_position.elevation:0.2f}")
-                raw_az_var.set(f"{panel.session.last_position.raw_azimuth:0.2f}")
-                raw_el_var.set(f"{panel.session.last_position.raw_elevation:0.2f}")
-            config = panel.config or app.configs.get(name)
+            position = panel.session.last_position if panel.session else None
+            if position:
+                az_var.set(f"{position.azimuth:0.2f}")
+                el_var.set(f"{position.elevation:0.2f}")
+                raw_az_var.set(f"{position.raw_azimuth:0.2f}")
+                raw_el_var.set(f"{position.raw_elevation:0.2f}")
+            config = panel.session.config if panel.session else panel.config or app.configs.get(name)
             if config:
                 az_offset_var.set(f"{config.calibration.az_offset:0.2f}")
                 el_offset_var.set(f"{config.calibration.el_offset:0.2f}")
@@ -489,6 +490,17 @@ class CalibrationDialog(tk.Toplevel):
         buttons.grid(row=1, column=0, sticky="ew")
         buttons.columnconfigure(0, weight=1)
         ttk.Button(buttons, text="Close", command=self.close).grid(row=0, column=1)
+        self.refresh_live_positions()
+
+    def refresh_live_positions(self) -> None:
+        for name, panel in self.app.panels.items():
+            if not panel.session:
+                continue
+            self.app.run_worker(
+                panel.session.read_position,
+                lambda position, n=name: self.app.refresh_calibration_views(n, position),
+                lambda text, n=name: self.app.set_status(f"{n}: {text}"),
+            )
 
     def refresh_offsets(self, name: Optional[str] = None, position: Optional[Position] = None) -> None:
         if self.closed:
@@ -496,12 +508,12 @@ class CalibrationDialog(tk.Toplevel):
         names = [name] if name else list(self.entries)
         for entry_name in names:
             values = self.entries.get(entry_name)
-            config = self.app.configs.get(entry_name)
+            panel = self.app.panels.get(entry_name)
+            config = panel.session.config if panel and panel.session else self.app.configs.get(entry_name)
             if not values or not config:
                 continue
             values["az_offset"].set(f"{config.calibration.az_offset:0.2f}")
             values["el_offset"].set(f"{config.calibration.el_offset:0.2f}")
-            panel = self.app.panels.get(entry_name)
             panel_position = position if entry_name == name else panel.session.last_position if panel and panel.session else None
             if panel_position:
                 values["actual_az"].set(f"{panel_position.azimuth:0.2f}")
@@ -649,21 +661,25 @@ class PeakCalibrationDialog(tk.Toplevel):
         body.grid(row=0, column=0, sticky="nsew")
 
         ttk.Label(body, text="Source").grid(row=0, column=0, sticky="w", pady=2)
-        ttk.Combobox(
+        source_combo = ttk.Combobox(
             body,
             textvariable=self.source_var,
             values=self.SOURCE_LABELS,
             width=18,
             state="readonly",
-        ).grid(row=0, column=1, sticky="w", pady=2)
+        )
+        source_combo.grid(row=0, column=1, sticky="w", pady=2)
         ttk.Label(body, text="Antenna").grid(row=1, column=0, sticky="w", pady=2)
-        ttk.Combobox(
+        antenna_combo = ttk.Combobox(
             body,
             textvariable=self.antenna_var,
             values=connected_names,
             width=18,
             state="readonly",
-        ).grid(row=1, column=1, sticky="w", pady=2)
+        )
+        antenna_combo.grid(row=1, column=1, sticky="w", pady=2)
+        source_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_display(live=True))
+        antenna_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_display(live=True))
 
         ttk.Separator(body, orient="horizontal").grid(row=2, column=0, columnspan=4, sticky="ew", pady=8)
         ttk.Label(body, textvariable=self.target_var).grid(row=3, column=0, columnspan=4, sticky="w", pady=2)
@@ -706,7 +722,7 @@ class PeakCalibrationDialog(tk.Toplevel):
         buttons.columnconfigure(0, weight=1)
         ttk.Button(buttons, text="Close", command=self.close).grid(row=0, column=1)
         self.protocol("WM_DELETE_WINDOW", self.close)
-        self.refresh_display()
+        self.refresh_display(live=True)
 
     def _hold_button(self, master: tk.Misc, text: str, direction: Direction) -> ttk.Button:
         button = ttk.Button(master, text=text)
@@ -728,10 +744,16 @@ class PeakCalibrationDialog(tk.Toplevel):
     def selected_panel(self) -> Optional["AntennaPanel"]:
         return self.app.panels.get(self.antenna_var.get())
 
+    def selected_config(self) -> Optional[AntennaConfig]:
+        session = self.selected_session()
+        if session:
+            return session.config
+        return self.app.configs.get(self.antenna_var.get())
+
     def current_peak_target(self) -> TargetPosition:
         return self.app.target_for_kind(self.source_kind())
 
-    def refresh_display(self) -> None:
+    def refresh_display(self, live: bool = False) -> None:
         if self.closed:
             return
         try:
@@ -740,7 +762,19 @@ class PeakCalibrationDialog(tk.Toplevel):
         except Exception as exc:
             self.target_var.set(f"Source unavailable: {exc}")
         session = self.selected_session()
-        config = self.app.configs.get(self.antenna_var.get())
+        config = self.selected_config()
+        if live and session:
+            self.app.run_worker(
+                session.read_position,
+                lambda position, n=self.antenna_var.get(): self.finish_live_refresh(n, position),
+                self.show_status,
+            )
+            if config:
+                self.offset_var.set(
+                    f"Offsets AZ {config.calibration.az_offset:+0.2f} EL {config.calibration.el_offset:+0.2f}"
+                )
+            self.after(1000, self.refresh_display)
+            return
         position = session.last_position if session else None
         if position:
             self.position_var.set(f"Antenna AZ {position.azimuth:0.2f} EL {position.elevation:0.2f}")
@@ -754,13 +788,21 @@ class PeakCalibrationDialog(tk.Toplevel):
             )
         self.after(1000, self.refresh_display)
 
+    def finish_live_refresh(self, name: str, position: Position) -> None:
+        if self.closed or name != self.antenna_var.get():
+            return
+        panel = self.selected_panel()
+        if panel:
+            panel.update_position(position)
+        self.app.refresh_calibration_views(name, position)
+
     def refresh_offsets(self, name: Optional[str] = None, position: Optional[Position] = None) -> None:
         if self.closed:
             return
         selected_name = self.antenna_var.get()
         if name is not None and name != selected_name:
             return
-        config = self.app.configs.get(selected_name)
+        config = self.selected_config()
         if config:
             self.offset_var.set(
                 f"Offsets AZ {config.calibration.az_offset:+0.2f} EL {config.calibration.el_offset:+0.2f}"
@@ -2027,6 +2069,7 @@ class WT3App(tk.Tk):
             return
         if self.calibration_dialog and self.calibration_dialog.winfo_exists():
             self.calibration_dialog.refresh_offsets()
+            self.calibration_dialog.refresh_live_positions()
             self.calibration_dialog.lift()
             return
         self.calibration_dialog = CalibrationDialog(self)
@@ -2036,7 +2079,7 @@ class WT3App(tk.Tk):
             self.status_var.set("No antenna configs loaded.")
             return
         if self.peak_calibration_dialog and self.peak_calibration_dialog.winfo_exists():
-            self.peak_calibration_dialog.refresh_offsets()
+            self.peak_calibration_dialog.refresh_display(live=True)
             self.peak_calibration_dialog.lift()
             return
         self.peak_calibration_dialog = PeakCalibrationDialog(self)
