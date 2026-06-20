@@ -119,6 +119,12 @@ The power-meter module currently provides:
 
 The GUI integration will come after the command-line power stream is stable.
 
+The main GUI also includes a compact RTL Power Meter panel. Set frequency,
+sample rate, gain, samples/read, update rate, and averaging, then press
+`Start Power`. Use `Stop Power` before unplugging or changing RTL settings.
+The displayed value is relative dBFS; less-negative values mean stronger
+received power.
+
 ## First Use
 
 1. Check `wt4.ini` ports and limits.

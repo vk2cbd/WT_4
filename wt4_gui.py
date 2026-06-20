@@ -24,6 +24,7 @@ from wt4_config import (
     save_sources,
 )
 from wt4_driver import AntennaConfig, Axis, Direction, EncoderInfo, Position, SafeAntenna, shortest_angle_delta
+from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
@@ -1516,6 +1517,118 @@ class AntennaPanel(ttk.Frame):
             self.app.run_worker(lambda: self.session.stop_all(), lambda _result: None, self.set_fault)
 
 
+class PowerMeterPanel(ttk.LabelFrame):
+    def __init__(self, master: tk.Misc, app: "WT4App") -> None:
+        super().__init__(master, text="RTL Power Meter", padding=8)
+        self.app = app
+        self.stop_event = threading.Event()
+        self.thread: Optional[threading.Thread] = None
+        self.meter: Optional[RtlPowerMeter] = None
+        self.power_values: list[float] = []
+
+        self.freq_var = tk.StringVar(value="1200000000")
+        self.rate_var = tk.StringVar(value="1024000")
+        self.gain_var = tk.StringVar(value="29.7")
+        self.samples_var = tk.StringVar(value="32768")
+        self.update_var = tk.StringVar(value="10.0")
+        self.smooth_var = tk.StringVar(value="3")
+        self.power_var = tk.StringVar(value="--.-- dBFS")
+        self.status_var = tk.StringVar(value="Stopped")
+
+        fields = ttk.Frame(self)
+        fields.grid(row=0, column=0, sticky="ew")
+        for column in range(12):
+            fields.columnconfigure(column, weight=1 if column % 2 else 0)
+        self._entry(fields, "Freq", self.freq_var, 0, width=11)
+        self._entry(fields, "Rate", self.rate_var, 2, width=8)
+        self._entry(fields, "Gain", self.gain_var, 4, width=6)
+        self._entry(fields, "Samples", self.samples_var, 6, width=7)
+        self._entry(fields, "Hz", self.update_var, 8, width=5)
+        self._entry(fields, "Avg", self.smooth_var, 10, width=4)
+
+        controls = ttk.Frame(self)
+        controls.grid(row=1, column=0, sticky="ew", pady=(6, 0))
+        ttk.Button(controls, text="Start Power", command=self.start).pack(side="left")
+        ttk.Button(controls, text="Stop Power", command=self.stop).pack(side="left", padx=(6, 0))
+        ttk.Label(controls, textvariable=self.power_var, font=("TkDefaultFont", 13)).pack(side="left", padx=(18, 0))
+        ttk.Label(controls, textvariable=self.status_var).pack(side="left", padx=(14, 0))
+
+    def _entry(self, parent: tk.Misc, label: str, variable: tk.StringVar, column: int, width: int) -> None:
+        ttk.Label(parent, text=label).grid(row=0, column=column, sticky="w", padx=(0, 2))
+        ttk.Entry(parent, textvariable=variable, width=width).grid(row=0, column=column + 1, sticky="w", padx=(0, 8))
+
+    def config_from_fields(self) -> PowerMeterConfig:
+        gain_text = self.gain_var.get().strip().lower()
+        gain = None if gain_text in ("", "auto") else float(gain_text)
+        samples = int(self.samples_var.get())
+        config = PowerMeterConfig(
+            center_frequency_hz=int(self.freq_var.get()),
+            sample_rate_hz=int(self.rate_var.get()),
+            update_rate_hz=float(self.update_var.get()),
+            gain_db=gain,
+            smoothing_samples=max(1, int(self.smooth_var.get())),
+            samples_per_read=None if samples == 0 else samples,
+        )
+        config.validate()
+        return config
+
+    def start(self) -> None:
+        if self.thread and self.thread.is_alive():
+            self.status_var.set("Already running")
+            return
+        try:
+            config = self.config_from_fields()
+        except Exception as exc:
+            self.status_var.set(str(exc))
+            return
+        self.power_values.clear()
+        self.stop_event.clear()
+        self.status_var.set("Starting...")
+        self.thread = threading.Thread(target=self.power_loop, args=(config,), daemon=True)
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+        meter = self.meter
+        if meter:
+            meter.close()
+            self.status_var.set("Stopping...")
+        else:
+            self.status_var.set("Stopped")
+
+    def power_loop(self, config: PowerMeterConfig) -> None:
+        try:
+            with RtlPowerMeter(config) as meter:
+                self.meter = meter
+                self.app.events.put(("ok", self.set_status, "Running"))
+                while not self.stop_event.is_set():
+                    reading = meter.read_power()
+                    self.app.events.put(("ok", self.update_power, reading))
+        except Exception as exc:
+            if not self.stop_event.is_set():
+                self.app.events.put(("error", self.set_status, str(exc)))
+        finally:
+            self.meter = None
+            self.app.events.put(("ok", self.finish_stopped, None))
+
+    def update_power(self, reading: PowerReading) -> None:
+        try:
+            smoothing = max(1, int(self.smooth_var.get()))
+        except ValueError:
+            smoothing = 1
+        self.power_values.append(reading.power_dbfs)
+        self.power_values = self.power_values[-smoothing:]
+        average = sum(self.power_values) / len(self.power_values)
+        self.power_var.set(f"{average:0.2f} dBFS")
+
+    def set_status(self, text: str) -> None:
+        self.status_var.set(text)
+
+    def finish_stopped(self, _unused: object) -> None:
+        if self.stop_event.is_set():
+            self.status_var.set("Stopped")
+
+
 class WT4App(tk.Tk):
     def __init__(self, config_path: str) -> None:
         super().__init__()
@@ -1600,6 +1713,9 @@ class WT4App(tk.Tk):
                     self.utc_var,
                 )
             self.panels[name] = panel
+
+        self.power_panel = PowerMeterPanel(body, self)
+        self.power_panel.grid(row=1, column=0, columnspan=2, sticky="ew", padx=4, pady=(10, 0))
 
         if not self.configs:
             self.status_var.set(f"No antennas found in {config_path}. Copy wt4.ini.example to wt4.ini.")
@@ -2258,6 +2374,7 @@ class WT4App(tk.Tk):
 
     def on_close(self) -> None:
         try:
+            self.power_panel.stop()
             self.stop_all()
             for session in self.sessions.values():
                 session.close()
