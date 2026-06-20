@@ -123,13 +123,7 @@ The main GUI also includes a compact RTL Power Meter panel. Set frequency,
 sample rate, gain, samples/read, update rate, and averaging, then press
 `Start Power`. Use `Stop Power` before unplugging or changing RTL settings.
 The displayed value is relative dBFS; less-negative values mean stronger
-received power. The GUI default is 16384 samples/read for responsive start and
-stop behaviour.
-
-If the GUI reports `Could not open RTL-SDR device 0`, the dongle is usually
-busy or not released by a previous process. Stop any other RTL program, wait a
-second, and retry. If it persists, close WT4 and run `rtl_test -t`; unplug and
-replug the dongle if the kernel still reports the device as busy.
+received power.
 
 ## First Use
 

@@ -1530,7 +1530,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.freq_var = tk.StringVar(value="1200000000")
         self.rate_var = tk.StringVar(value="1024000")
         self.gain_var = tk.StringVar(value="29.7")
-        self.samples_var = tk.StringVar(value="16384")
+        self.samples_var = tk.StringVar(value="32768")
         self.update_var = tk.StringVar(value="10.0")
         self.smooth_var = tk.StringVar(value="3")
         self.power_var = tk.StringVar(value="--.-- dBFS")
@@ -1596,6 +1596,9 @@ class PowerMeterPanel(ttk.LabelFrame):
     def stop(self) -> None:
         self.stop_event.set()
         if self.thread and self.thread.is_alive():
+            meter = self.meter
+            if meter:
+                meter.cancel()
             self.status_var.set("Stopping...")
         else:
             self.thread = None
