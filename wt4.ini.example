@@ -25,6 +25,8 @@ warmup_seconds = 30.0
 span_degrees = 4.000
 increment_degrees = 0.500
 dwell_seconds = 1.000
+scan_count = 1
+antenna_name = East
 
 [antenna:East]
 port = /dev/ttyUSB0

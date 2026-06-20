@@ -138,11 +138,15 @@ the antennas.
 
 `Scan Cal` performs a source-relative calibration scan while normal tracking
 continues. Start tracking Sun, Moon, or a selected source, start the RTL power
-meter, open `Scan Cal`, choose span, increment, and dwell, then run an AZ or EL
-scan. WT4 offsets the live tracking target by each scan point, waits for the
-guarded tracking move, averages power during the dwell, saves
-`wt4_scan_az_*.csv` or `wt4_scan_el_*.csv`, and opens a graph of power versus
-scan offset. Scan defaults are stored in the `[scan]` section of `wt4.ini`.
+meter, open `Scan Cal`, choose the antenna, span, increment, dwell, and number
+of scans, then run an AZ or EL scan. WT4 offsets only the selected antenna's
+live tracking target by each scan point while the other antenna remains on the
+nominal source, waits for the guarded tracking move, and averages power during
+the dwell. Repeated scans always run from `-span` to `+span`; matching offset
+points are averaged before plotting. The raw and averaged measurements are saved
+to `wt4_scan_<antenna>_az_*.csv` or `wt4_scan_<antenna>_el_*.csv`, and a graph
+of averaged power versus scan offset opens when complete. Scan defaults are
+stored in the `[scan]` section of `wt4.ini`.
 
 ## First Use
 

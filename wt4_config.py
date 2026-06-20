@@ -51,6 +51,8 @@ class ScanConfig:
     span_degrees: float = 4.0
     increment_degrees: float = 0.5
     dwell_seconds: float = 1.0
+    scan_count: int = 1
+    antenna_name: str = ""
 
 
 def load_site_config(path: Union[str, Path]) -> SiteConfig:
@@ -92,6 +94,8 @@ def load_scan_config(path: Union[str, Path]) -> ScanConfig:
         span_degrees=parser.getfloat("scan", "span_degrees", fallback=4.0),
         increment_degrees=parser.getfloat("scan", "increment_degrees", fallback=0.5),
         dwell_seconds=parser.getfloat("scan", "dwell_seconds", fallback=1.0),
+        scan_count=parser.getint("scan", "scan_count", fallback=1),
+        antenna_name=parser.get("scan", "antenna_name", fallback="").strip(),
     )
 
 
@@ -104,6 +108,8 @@ def save_scan_config(path: Union[str, Path], scan: ScanConfig) -> None:
         "span_degrees": f"{scan.span_degrees:.3f}",
         "increment_degrees": f"{scan.increment_degrees:.3f}",
         "dwell_seconds": f"{scan.dwell_seconds:.3f}",
+        "scan_count": str(max(1, int(scan.scan_count))),
+        "antenna_name": scan.antenna_name,
     }
     with path.open("w", encoding="utf-8") as handle:
         parser.write(handle)
