@@ -18,16 +18,19 @@ from typing import Optional
 from wt4_astro import TargetPosition, local_sidereal_time, moon_equatorial, moon_position, source_position
 from wt4_config import (
     PowerConfig,
+    RtlCalibration,
     ScanConfig,
     SiteConfig,
     SourceConfig,
     load_configs,
     load_power_config,
+    load_rtl_calibration,
     load_scan_config,
     load_site_config,
     load_sources,
     save_configs,
     save_power_config,
+    save_rtl_calibration,
     save_scan_config,
     save_site_config,
     save_sources,
@@ -1571,6 +1574,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         controls.grid(row=1, column=0, sticky="ew", pady=(6, 0))
         ttk.Button(controls, text="Start Power", command=self.start).pack(side="left")
         ttk.Button(controls, text="Stop Power", command=self.stop).pack(side="left", padx=(6, 0))
+        ttk.Button(controls, text="RTL Cal", command=self.app.open_rtl_calibration).pack(side="left", padx=(6, 0))
         ttk.Button(controls, text="Start Log", command=self.start_log).pack(side="left", padx=(6, 0))
         ttk.Button(controls, text="Stop Log", command=self.stop_log).pack(side="left", padx=(6, 0))
         ttk.Label(controls, textvariable=self.power_var, font=("TkDefaultFont", 13)).pack(side="left", padx=(18, 0))
@@ -1803,6 +1807,103 @@ class PowerMeterPanel(ttk.LabelFrame):
             self.power_var.set("--.- dBFS")
             self.stats_var.set("Avg -- Min -- Max --")
             self.status_var.set("Stopped")
+
+
+class RtlCalibrationDialog(tk.Toplevel):
+    LEVELS_DBM = tuple(range(-100, -19, 10))
+
+    def __init__(self, app: "WT4App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("RTL Calibration")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        self.frequency_var = tk.StringVar(value=app.power_panel.freq_var.get())
+        self.status_var = tk.StringVar(value="Set signal source level, then capture each row.")
+        self.level_vars: dict[int, tk.StringVar] = {level: tk.StringVar(value="--") for level in self.LEVELS_DBM}
+
+        body = ttk.Frame(self, padding=10)
+        body.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(body, text="Frequency MHz").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Entry(body, textvariable=self.frequency_var, width=10).grid(row=0, column=1, sticky="w", pady=2)
+        ttk.Button(body, text="Load", command=self.load_frequency).grid(row=0, column=2, sticky="w", padx=(6, 0), pady=2)
+
+        table = ttk.Frame(body)
+        table.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        ttk.Label(table, text="Source dBm").grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ttk.Label(table, text="Measured dBFS").grid(row=0, column=1, sticky="w", padx=(0, 12))
+        for row, level in enumerate(self.LEVELS_DBM, start=1):
+            ttk.Label(table, text=f"{level:d}").grid(row=row, column=0, sticky="w", pady=2)
+            ttk.Label(table, textvariable=self.level_vars[level], width=10).grid(row=row, column=1, sticky="w", pady=2)
+            ttk.Button(table, text="Capture", command=lambda l=level: self.capture_level(l)).grid(
+                row=row, column=2, sticky="ew", pady=2
+            )
+
+        ttk.Label(body, textvariable=self.status_var, foreground="red", wraplength=360).grid(
+            row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        )
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.grid(row=1, column=0, sticky="ew")
+        ttk.Button(buttons, text="Save", command=self.save).pack(side="left")
+        ttk.Button(buttons, text="Close", command=self.close).pack(side="right")
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.load_frequency()
+
+    def frequency_hz(self) -> int:
+        return int(round(float(self.frequency_var.get()) * 1_000_000))
+
+    def load_frequency(self) -> None:
+        try:
+            calibration = load_rtl_calibration(self.app.config_path, self.frequency_hz())
+        except ValueError:
+            self.status_var.set("Frequency must be numeric MHz.")
+            return
+        for level in self.LEVELS_DBM:
+            value = calibration.points_dbfs_by_dbm.get(level)
+            self.level_vars[level].set(f"{value:0.2f}" if value is not None else "--")
+        self.status_var.set(f"Loaded calibration for {calibration.frequency_hz / 1_000_000:0.1f} MHz.")
+
+    def capture_level(self, level_dbm: int) -> None:
+        power = self.app.power_panel.latest_power_dbfs
+        if power is None:
+            self.status_var.set("Start RTL power and wait for a reading before capture.")
+            return
+        self.level_vars[level_dbm].set(f"{power:0.2f}")
+        self.status_var.set(f"Captured {level_dbm:d} dBm as {power:0.2f} dBFS.")
+
+    def save(self) -> None:
+        try:
+            frequency_hz = self.frequency_hz()
+            points = self.points_from_fields()
+        except ValueError as exc:
+            self.status_var.set(str(exc))
+            return
+        if not points:
+            self.status_var.set("Capture at least one calibration point before saving.")
+            return
+        save_rtl_calibration(
+            self.app.config_path,
+            RtlCalibration(frequency_hz=frequency_hz, points_dbfs_by_dbm=points),
+        )
+        self.status_var.set(f"Saved {len(points)} points at {frequency_hz / 1_000_000:0.1f} MHz.")
+
+    def points_from_fields(self) -> dict[int, float]:
+        points: dict[int, float] = {}
+        for level, variable in self.level_vars.items():
+            text = variable.get().strip()
+            if text in ("", "--"):
+                continue
+            try:
+                points[level] = float(text)
+            except ValueError as exc:
+                raise ValueError(f"{level:d} dBm reading must be numeric.") from exc
+        return points
+
+    def close(self) -> None:
+        if self.app.rtl_calibration_dialog is self:
+            self.app.rtl_calibration_dialog = None
+        self.destroy()
 
 
 class ScanCalibrationDialog(tk.Toplevel):
@@ -2169,6 +2270,7 @@ class WT4App(tk.Tk):
         self.calibration_dialog: Optional[CalibrationDialog] = None
         self.peak_calibration_dialog: Optional[PeakCalibrationDialog] = None
         self.scan_dialog: Optional[ScanCalibrationDialog] = None
+        self.rtl_calibration_dialog: Optional[RtlCalibrationDialog] = None
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -2994,6 +3096,12 @@ class WT4App(tk.Tk):
             self.scan_dialog.lift()
             return
         self.scan_dialog = ScanCalibrationDialog(self)
+
+    def open_rtl_calibration(self) -> None:
+        if self.rtl_calibration_dialog and self.rtl_calibration_dialog.winfo_exists():
+            self.rtl_calibration_dialog.lift()
+            return
+        self.rtl_calibration_dialog = RtlCalibrationDialog(self)
 
     def refresh_calibration_views(self, name: Optional[str] = None, position: Optional[Position] = None) -> None:
         if self.calibration_dialog and self.calibration_dialog.winfo_exists():

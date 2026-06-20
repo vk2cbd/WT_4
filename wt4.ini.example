@@ -21,6 +21,12 @@ update_rate_hz = 10.0
 smoothing_samples = 3
 warmup_seconds = 30.0
 
+# Created/updated by RTL Cal. Each section is frequency specific.
+# [rtl_cal:1200000000]
+# frequency_hz = 1200000000
+# dbm_-100 = -72.300
+# dbm_-90 = -62.100
+
 [scan]
 span_degrees = 4.000
 increment_degrees = 0.500

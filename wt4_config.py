@@ -55,6 +55,12 @@ class ScanConfig:
     antenna_name: str = ""
 
 
+@dataclass
+class RtlCalibration:
+    frequency_hz: int
+    points_dbfs_by_dbm: dict[int, float]
+
+
 def load_site_config(path: Union[str, Path]) -> SiteConfig:
     path = Path(path)
     parser = configparser.ConfigParser()
@@ -83,6 +89,42 @@ def load_site_config(path: Union[str, Path]) -> SiteConfig:
         az_slow_threshold_degrees=parser.getfloat("site", "az_slow_threshold_degrees", fallback=old_slow_threshold),
         el_slow_threshold_degrees=parser.getfloat("site", "el_slow_threshold_degrees", fallback=old_slow_threshold),
     )
+
+
+def load_rtl_calibration(path: Union[str, Path], frequency_hz: int) -> RtlCalibration:
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    if path.exists():
+        parser.read(path)
+    section = _rtl_cal_section(frequency_hz)
+    points: dict[int, float] = {}
+    for level_dbm in range(-100, -19, 10):
+        key = _rtl_cal_key(level_dbm)
+        if parser.has_option(section, key):
+            points[level_dbm] = parser.getfloat(section, key)
+    return RtlCalibration(frequency_hz=frequency_hz, points_dbfs_by_dbm=points)
+
+
+def save_rtl_calibration(path: Union[str, Path], calibration: RtlCalibration) -> None:
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    if path.exists():
+        parser.read(path)
+    section = _rtl_cal_section(calibration.frequency_hz)
+    parser[section] = {"frequency_hz": str(int(calibration.frequency_hz))}
+    for level_dbm in range(-100, -19, 10):
+        if level_dbm in calibration.points_dbfs_by_dbm:
+            parser[section][_rtl_cal_key(level_dbm)] = f"{calibration.points_dbfs_by_dbm[level_dbm]:.3f}"
+    with path.open("w", encoding="utf-8") as handle:
+        parser.write(handle)
+
+
+def _rtl_cal_section(frequency_hz: int) -> str:
+    return f"rtl_cal:{int(frequency_hz)}"
+
+
+def _rtl_cal_key(level_dbm: int) -> str:
+    return f"dbm_{level_dbm}"
 
 
 def load_scan_config(path: Union[str, Path]) -> ScanConfig:

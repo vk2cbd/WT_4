@@ -136,6 +136,13 @@ containing power, target position, and the latest antenna positions. This is the
 first step toward source sweep calibration; it is passive and does not command
 the antennas.
 
+Use `RTL Cal` to record a signal-generator calibration table for a nominated
+frequency. Set the RTL panel frequency and receiver settings, start the power
+meter, open `RTL Cal`, enter the calibration frequency in MHz, then step the
+signal source from `-100 dBm` to `-20 dBm` in `10 dB` steps and press `Capture`
+for each row. Press `Save` to write the dBm-to-dBFS table into a frequency
+specific `[rtl_cal:<frequency_hz>]` section of `wt4.ini`.
+
 `Scan Cal` performs a source-relative calibration scan while normal tracking
 continues. Start tracking Sun, Moon, or a selected source, start the RTL power
 meter, open `Scan Cal`, choose the antenna, span, increment, dwell, and number
