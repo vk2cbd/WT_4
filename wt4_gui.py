@@ -17,14 +17,17 @@ from typing import Optional
 from wt4_astro import TargetPosition, local_sidereal_time, moon_equatorial, moon_position, source_position
 from wt4_config import (
     PowerConfig,
+    ScanConfig,
     SiteConfig,
     SourceConfig,
     load_configs,
     load_power_config,
+    load_scan_config,
     load_site_config,
     load_sources,
     save_configs,
     save_power_config,
+    save_scan_config,
     save_site_config,
     save_sources,
 )
@@ -1531,6 +1534,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.meter: Optional[RtlPowerMeter] = None
         self.power_values: list[float] = []
         self.last_reading_time = 0.0
+        self.latest_power_dbfs: Optional[float] = None
         self.power_started_at = 0.0
         self.warmup_seconds = 0.0
         self.history_values: list[float] = []
@@ -1542,7 +1546,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.freq_var = tk.StringVar(value=f"{power.center_frequency_hz / 1_000_000:0.1f}")
         self.rate_var = tk.StringVar(value=f"{power.sample_rate_hz / 1000:0.0f}")
         self.gain_var = tk.StringVar(value=power.gain_db)
-        self.samples_var = tk.StringVar(value=power.samples_per_read)
+        self.samples_var = tk.StringVar(value=self.samples_display_value(power.samples_per_read))
         self.update_var = tk.StringVar(value=f"{power.update_rate_hz:0.0f}")
         self.smooth_var = tk.StringVar(value=str(power.smoothing_samples))
         self.warmup_var = tk.StringVar(value=f"{power.warmup_seconds:0.0f}")
@@ -1557,7 +1561,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self._entry(fields, "Freq MHz", self.freq_var, 0, width=7)
         self._entry(fields, "Sample ksps", self.rate_var, 2, width=6)
         self._entry(fields, "Gain", self.gain_var, 4, width=6)
-        self._entry(fields, "Samples", self.samples_var, 6, width=7)
+        self._entry(fields, "Samples k", self.samples_var, 6, width=7)
         self._entry(fields, "GUI Hz", self.update_var, 8, width=5)
         self._entry(fields, "Avg", self.smooth_var, 10, width=4)
         self._entry(fields, "Warm s", self.warmup_var, 12, width=5)
@@ -1576,6 +1580,21 @@ class PowerMeterPanel(ttk.LabelFrame):
         ttk.Label(parent, text=label).grid(row=0, column=column, sticky="w", padx=(0, 2))
         ttk.Entry(parent, textvariable=variable, width=width).grid(row=0, column=column + 1, sticky="w", padx=(0, 8))
 
+    def samples_display_value(self, stored_value: str) -> str:
+        text = stored_value.strip().lower()
+        if text in ("", "auto", "0"):
+            return "auto"
+        try:
+            return f"{int(round(int(text) / 1000)):d}"
+        except ValueError:
+            return stored_value
+
+    def samples_stored_value(self) -> str:
+        text = self.samples_var.get().strip().lower()
+        if text in ("", "auto", "0"):
+            return "auto"
+        return str(int(round(float(text) * 1000)))
+
     def power_config_from_fields(self) -> PowerConfig:
         freq_hz = int(round(float(self.freq_var.get()) * 1_000_000))
         sample_rate_hz = int(round(float(self.rate_var.get()) * 1000))
@@ -1583,7 +1602,7 @@ class PowerMeterPanel(ttk.LabelFrame):
             center_frequency_hz=freq_hz,
             sample_rate_hz=sample_rate_hz,
             gain_db=self.gain_var.get().strip() or "auto",
-            samples_per_read=self.samples_var.get().strip() or "auto",
+            samples_per_read=self.samples_stored_value(),
             update_rate_hz=float(self.update_var.get()),
             smoothing_samples=max(1, int(self.smooth_var.get())),
             warmup_seconds=max(0.0, float(self.warmup_var.get())),
@@ -1593,7 +1612,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         power = self.power_config_from_fields()
         gain_text = self.gain_var.get().strip().lower()
         gain = None if gain_text in ("", "auto") else float(gain_text)
-        samples_text = self.samples_var.get().strip().lower()
+        samples_text = power.samples_per_read.strip().lower()
         samples = None if samples_text in ("", "auto", "0") else int(samples_text)
         config = PowerMeterConfig(
             center_frequency_hz=power.center_frequency_hz,
@@ -1617,6 +1636,7 @@ class PowerMeterPanel(ttk.LabelFrame):
     def format_fields(self, power: PowerConfig) -> None:
         self.freq_var.set(f"{power.center_frequency_hz / 1_000_000:0.1f}")
         self.rate_var.set(f"{power.sample_rate_hz / 1000:0.0f}")
+        self.samples_var.set(self.samples_display_value(power.samples_per_read))
         self.update_var.set(f"{power.update_rate_hz:0.0f}")
         self.smooth_var.set(str(power.smoothing_samples))
         self.warmup_var.set(f"{power.warmup_seconds:0.0f}")
@@ -1749,6 +1769,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.last_reading_time = time.monotonic()
         self.power_values = self.power_values[-smoothing:]
         average = sum(self.power_values) / len(self.power_values)
+        self.latest_power_dbfs = average
         self.power_var.set(f"{average:0.1f} dBFS")
         self.history_values.append(average)
         self.history_values = self.history_values[-600:]
@@ -1777,9 +1798,128 @@ class PowerMeterPanel(ttk.LabelFrame):
             self.power_values.clear()
             self.history_values.clear()
             self.last_reading_time = 0.0
+            self.latest_power_dbfs = None
             self.power_var.set("--.- dBFS")
             self.stats_var.set("Avg -- Min -- Max --")
             self.status_var.set("Stopped")
+
+
+class ScanCalibrationDialog(tk.Toplevel):
+    def __init__(self, app: "WT4App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("Scan Calibration")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        self.status_var = tk.StringVar(value="Track a source and start RTL power before scanning.")
+        self.span_var = tk.StringVar(value=f"{app.scan_config.span_degrees:0.1f}")
+        self.increment_var = tk.StringVar(value=f"{app.scan_config.increment_degrees:0.2f}")
+        self.dwell_var = tk.StringVar(value=f"{app.scan_config.dwell_seconds:0.1f}")
+
+        body = ttk.Frame(self, padding=10)
+        body.grid(row=0, column=0, sticky="nsew")
+        self._entry(body, "Span +/- deg", self.span_var, 0)
+        self._entry(body, "Increment deg", self.increment_var, 1)
+        self._entry(body, "Dwell sec", self.dwell_var, 2)
+        ttk.Label(body, textvariable=self.status_var, foreground="red", wraplength=360).grid(
+            row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+        )
+
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.grid(row=1, column=0, sticky="ew")
+        ttk.Button(buttons, text="AZ Scan", command=lambda: self.start_scan(Axis.AZIMUTH)).pack(side="left")
+        ttk.Button(buttons, text="EL Scan", command=lambda: self.start_scan(Axis.ELEVATION)).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="Stop Scan", command=app.stop_scan).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="Close", command=self.close).pack(side="right")
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+    def _entry(self, parent: tk.Misc, label: str, variable: tk.StringVar, row: int) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Entry(parent, textvariable=variable, width=9).grid(row=row, column=1, sticky="w", pady=2)
+
+    def start_scan(self, axis: Axis) -> None:
+        try:
+            config = ScanConfig(
+                span_degrees=float(self.span_var.get()),
+                increment_degrees=float(self.increment_var.get()),
+                dwell_seconds=float(self.dwell_var.get()),
+            )
+            self.app.validate_scan_config(config)
+        except ValueError:
+            self.status_var.set("Scan parameters must be numeric.")
+            return
+        except RuntimeError as exc:
+            self.status_var.set(str(exc))
+            return
+        self.span_var.set(f"{config.span_degrees:0.1f}")
+        self.increment_var.set(f"{config.increment_degrees:0.2f}")
+        self.dwell_var.set(f"{config.dwell_seconds:0.1f}")
+        self.app.start_calibration_scan(axis, config, self)
+
+    def set_status(self, text: str) -> None:
+        if self.winfo_exists():
+            self.status_var.set(text)
+
+    def close(self) -> None:
+        if self.app.scan_dialog is self:
+            self.app.scan_dialog = None
+        self.destroy()
+
+
+class ScanGraphDialog(tk.Toplevel):
+    def __init__(self, app: "WT4App", axis: Axis, rows: list[dict[str, object]], csv_path: Path) -> None:
+        super().__init__(app)
+        self.title(f"{axis_label(axis)} Scan")
+        self.resizable(False, False)
+        body = ttk.Frame(self, padding=10)
+        body.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(body, text=f"{axis_label(axis)} scan saved to {csv_path.name}").grid(row=0, column=0, sticky="w")
+        canvas = tk.Canvas(body, width=520, height=300, background="white")
+        canvas.grid(row=1, column=0, pady=(8, 0))
+        self.draw_plot(canvas, axis, rows)
+        ttk.Button(body, text="Close", command=self.destroy).grid(row=2, column=0, sticky="e", pady=(8, 0))
+
+    def draw_plot(self, canvas: tk.Canvas, axis: Axis, rows: list[dict[str, object]]) -> None:
+        width = int(canvas["width"])
+        height = int(canvas["height"])
+        left, right, top, bottom = 55, width - 20, 20, height - 45
+        powers = [float(row["power_dbfs"]) for row in rows if row.get("power_dbfs") is not None]
+        offsets = [float(row["offset_degrees"]) for row in rows]
+        if not powers or not offsets:
+            canvas.create_text(width / 2, height / 2, text="No scan data")
+            return
+        min_x, max_x = min(offsets), max(offsets)
+        min_y, max_y = min(powers), max(powers)
+        if min_x == max_x:
+            min_x -= 1.0
+            max_x += 1.0
+        if min_y == max_y:
+            min_y -= 0.5
+            max_y += 0.5
+        canvas.create_line(left, bottom, right, bottom)
+        canvas.create_line(left, top, left, bottom)
+        canvas.create_text((left + right) / 2, height - 15, text=f"{axis_label(axis)} offset degrees")
+        canvas.create_text(18, (top + bottom) / 2, text="dBFS", angle=90)
+        canvas.create_text(left, bottom + 14, text=f"{min_x:0.1f}", anchor="n")
+        canvas.create_text(right, bottom + 14, text=f"{max_x:0.1f}", anchor="n")
+        canvas.create_text(left - 8, bottom, text=f"{min_y:0.1f}", anchor="e")
+        canvas.create_text(left - 8, top, text=f"{max_y:0.1f}", anchor="e")
+
+        points: list[tuple[float, float]] = []
+        for row in rows:
+            power = row.get("power_dbfs")
+            if power is None:
+                continue
+            x_value = float(row["offset_degrees"])
+            y_value = float(power)
+            x = left + (x_value - min_x) / (max_x - min_x) * (right - left)
+            y = bottom - (y_value - min_y) / (max_y - min_y) * (bottom - top)
+            points.append((x, y))
+        for start, end in zip(points, points[1:]):
+            canvas.create_line(start[0], start[1], end[0], end[1], fill="#0057b8", width=2)
+        for x, y in points:
+            canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#0057b8", outline="")
 
 
 class WT4App(tk.Tk):
@@ -1793,14 +1933,22 @@ class WT4App(tk.Tk):
         self.site = load_site_config(config_path)
         self.sources = load_sources(config_path)
         self.power_config = load_power_config(config_path)
+        self.scan_config = load_scan_config(config_path)
         self.sessions: dict[str, SafeAntenna] = {}
         self.events: queue.Queue[tuple[str, object, object]] = queue.Queue()
         self.tracking_stop_event = threading.Event()
         self.park_stop_event = threading.Event()
+        self.scan_stop_event = threading.Event()
+        self.motion_lock = threading.Lock()
+        self.scan_offset_lock = threading.Lock()
         self.tracking_active = False
         self.tracking_thread: Optional[threading.Thread] = None
+        self.scan_thread: Optional[threading.Thread] = None
         self.tracking_last_update = 0.0
         self.parking_active = False
+        self.scan_active = False
+        self.scan_axis: Optional[Axis] = None
+        self.scan_offset_degrees = 0.0
         self.tracking_kind = ""
         self.current_target: Optional[TargetPosition] = None
         self.target_name_var = tk.StringVar(value="Target --")
@@ -1814,6 +1962,7 @@ class WT4App(tk.Tk):
         self.utc_var = tk.StringVar(value="UTC --")
         self.calibration_dialog: Optional[CalibrationDialog] = None
         self.peak_calibration_dialog: Optional[PeakCalibrationDialog] = None
+        self.scan_dialog: Optional[ScanCalibrationDialog] = None
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1832,6 +1981,7 @@ class WT4App(tk.Tk):
         ttk.Button(top_row_1, text="Sources", command=self.open_sources).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Calibration", command=self.open_calibration).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Peak Cal", command=self.open_peak_calibration).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_1, text="Scan Cal", command=self.open_scan_calibration).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Encoders", command=self.open_encoders).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="STOP ALL", command=self.stop_all).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_2, text="Track Sun", command=lambda: self.start_tracking("sun")).pack(side="left")
@@ -1967,9 +2117,142 @@ class WT4App(tk.Tk):
         self.tracking_stop_event.set()
         self.tracking_active = False
         self.tracking_kind = ""
+        self.stop_scan()
         self.target_ha_var.set("HA --")
         self.stop_all()
         self.status_var.set("Stopped.")
+
+    def validate_scan_config(self, config: ScanConfig) -> None:
+        if not (0.1 <= config.span_degrees <= 30.0):
+            raise RuntimeError("Scan span must be 0.1..30.0 degrees.")
+        if not (0.01 <= config.increment_degrees <= config.span_degrees):
+            raise RuntimeError("Scan increment must be 0.01 degrees up to the scan span.")
+        if not (0.1 <= config.dwell_seconds <= 60.0):
+            raise RuntimeError("Dwell must be 0.1..60.0 seconds.")
+
+    def start_calibration_scan(self, axis: Axis, config: ScanConfig, dialog: ScanCalibrationDialog) -> None:
+        if self.scan_thread and self.scan_thread.is_alive():
+            dialog.set_status("Scan already running.")
+            return
+        if not self.tracking_active or not self.tracking_kind:
+            dialog.set_status("Start tracking Sun, Moon, or Source before scanning.")
+            return
+        if not self.sessions:
+            dialog.set_status("Connect antennas before scanning.")
+            return
+        if self.power_panel.latest_power_dbfs is None:
+            dialog.set_status("Start RTL power and wait for readings before scanning.")
+            return
+        try:
+            self.validate_scan_config(config)
+        except RuntimeError as exc:
+            dialog.set_status(str(exc))
+            return
+        self.scan_config = config
+        save_scan_config(self.config_path, config)
+        self.scan_stop_event.clear()
+        self.scan_active = True
+        dialog.set_status(f"{axis_label(axis)} scan starting...")
+        self.status_var.set(f"{axis_label(axis)} scan starting.")
+        self.scan_thread = threading.Thread(target=lambda: self.scan_worker(axis, config, dialog), daemon=True)
+        self.scan_thread.start()
+
+    def stop_scan(self) -> None:
+        self.scan_stop_event.set()
+        self.scan_active = False
+        self.set_scan_offset(None)
+        if self.scan_dialog and self.scan_dialog.winfo_exists():
+            self.scan_dialog.set_status("Scan stopping; returning to nominal target.")
+
+    def scan_offsets(self, config: ScanConfig) -> list[float]:
+        offsets: list[float] = []
+        value = -config.span_degrees
+        limit = config.span_degrees + config.increment_degrees * 0.5
+        while value <= limit:
+            offsets.append(round(value, 6))
+            value += config.increment_degrees
+        if offsets and offsets[-1] > config.span_degrees:
+            offsets[-1] = config.span_degrees
+        return offsets
+
+    def scan_worker(self, axis: Axis, config: ScanConfig, dialog: ScanCalibrationDialog) -> None:
+        rows: list[dict[str, object]] = []
+        csv_path = Path(f"wt4_scan_{axis_label(axis).lower()}_{datetime.now():%Y%m%d-%H%M%S}.csv")
+        try:
+            offsets = self.scan_offsets(config)
+            for index, offset in enumerate(offsets, start=1):
+                if self.scan_stop_event.is_set():
+                    break
+                nominal = self.target_for_kind(self.tracking_kind)
+                self.set_scan_offset(axis, offset)
+                target = self.current_tracking_target(self.tracking_kind)
+                self.events.put(("ok", dialog.set_status, f"{axis_label(axis)} scan {index}/{len(offsets)} offset {offset:+0.2f} deg"))
+                self.events.put(("ok", self.set_status, f"{axis_label(axis)} scan offset {offset:+0.2f} deg."))
+                self.slew_all_to_target(target, "SCAN", show_slewing=False)
+                row = self.collect_scan_point(axis, offset, config.dwell_seconds, nominal, target)
+                rows.append(row)
+            self.write_scan_csv(csv_path, rows)
+            self.set_scan_offset(None)
+            if self.tracking_kind and not self.tracking_stop_event.is_set():
+                self.slew_all_to_target(self.current_tracking_target(self.tracking_kind), "SCAN", show_slewing=False)
+            if rows:
+                self.events.put(("ok", lambda _unused: ScanGraphDialog(self, axis, rows, csv_path), None))
+                self.events.put(("ok", dialog.set_status, f"Scan complete: {csv_path.name}"))
+                self.events.put(("ok", self.set_status, f"Scan complete: {csv_path.name}"))
+            else:
+                self.events.put(("ok", dialog.set_status, "Scan stopped before measurements were taken."))
+        except Exception as exc:
+            self.scan_stop_event.set()
+            self.set_scan_offset(None)
+            self.events.put(("error", dialog.set_status, str(exc)))
+            self.events.put(("error", self.set_status, f"Scan fault: {exc}"))
+        finally:
+            self.scan_active = False
+
+    def collect_scan_point(
+        self,
+        axis: Axis,
+        offset: float,
+        dwell_seconds: float,
+        nominal: TargetPosition,
+        target: TargetPosition,
+    ) -> dict[str, object]:
+        powers: list[float] = []
+        end_time = time.monotonic() + dwell_seconds
+        while not self.scan_stop_event.is_set() and time.monotonic() < end_time:
+            power = self.power_panel.latest_power_dbfs
+            if power is not None:
+                powers.append(power)
+            time.sleep(0.1)
+        now_local = datetime.now().astimezone()
+        row: dict[str, object] = {
+            "local_time": now_local.isoformat(timespec="milliseconds"),
+            "axis": axis_label(axis),
+            "offset_degrees": offset,
+            "nominal_az": nominal.azimuth,
+            "nominal_el": nominal.elevation,
+            "target_az": target.azimuth,
+            "target_el": target.elevation,
+            "power_dbfs": sum(powers) / len(powers) if powers else None,
+            "sample_count": len(powers),
+        }
+        for name, panel in self.panels.items():
+            position = panel.session.last_position if panel.session else None
+            row[f"{name}_az"] = position.azimuth if position else None
+            row[f"{name}_el"] = position.elevation if position else None
+            row[f"{name}_raw_az"] = position.raw_azimuth if position else None
+            row[f"{name}_raw_el"] = position.raw_elevation if position else None
+        return row
+
+    def write_scan_csv(self, csv_path: Path, rows: list[dict[str, object]]) -> None:
+        if not rows:
+            return
+        fieldnames = list(rows[0])
+        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
 
     def prepare_peak_calibration_owner(self) -> None:
         if self.parking_active:
@@ -2155,7 +2438,7 @@ class WT4App(tk.Tk):
         az_tolerance = self.site.az_track_tolerance_degrees
         el_tolerance = self.site.el_track_tolerance_degrees
         if az_tolerance >= 0 and el_tolerance >= 0:
-            return source
+            return self.apply_scan_offset(source)
 
         now = datetime.now(timezone.utc)
         future = self.target_for_kind(kind, now + timedelta(seconds=60))
@@ -2167,11 +2450,27 @@ class WT4App(tk.Tk):
             azimuth = (azimuth + abs(az_tolerance) * (1.0 if az_delta > 0 else -1.0)) % 360.0
         if el_tolerance < 0 and el_delta != 0.0:
             elevation += abs(el_tolerance) * (1.0 if el_delta > 0 else -1.0)
-        return TargetPosition(
+        target = TargetPosition(
             name=source.name,
             azimuth=azimuth,
             elevation=elevation,
         )
+        return self.apply_scan_offset(target)
+
+    def apply_scan_offset(self, target: TargetPosition) -> TargetPosition:
+        with self.scan_offset_lock:
+            axis = self.scan_axis
+            offset = self.scan_offset_degrees
+        if axis is None or offset == 0.0:
+            return target
+        if axis == Axis.AZIMUTH:
+            return TargetPosition(target.name, (target.azimuth + offset) % 360.0, target.elevation)
+        return TargetPosition(target.name, target.azimuth, max(0.0, min(90.0, target.elevation + offset)))
+
+    def set_scan_offset(self, axis: Optional[Axis], offset: float = 0.0) -> None:
+        with self.scan_offset_lock:
+            self.scan_axis = axis
+            self.scan_offset_degrees = offset if axis else 0.0
 
     def validate_site(self, site: SiteConfig) -> None:
         self.validate_observer(site)
@@ -2253,6 +2552,10 @@ class WT4App(tk.Tk):
         return f"{sign}{hours:02d}:{minutes:02d}"
 
     def slew_all_to_target(self, target: TargetPosition, mode: str, show_slewing: bool = True) -> TargetPosition:
+        with self.motion_lock:
+            return self._slew_all_to_target(target, mode, show_slewing)
+
+    def _slew_all_to_target(self, target: TargetPosition, mode: str, show_slewing: bool = True) -> TargetPosition:
         errors: list[str] = []
         threads: list[threading.Thread] = []
         lock = threading.Lock()
@@ -2428,6 +2731,12 @@ class WT4App(tk.Tk):
             return
         self.peak_calibration_dialog = PeakCalibrationDialog(self)
 
+    def open_scan_calibration(self) -> None:
+        if self.scan_dialog and self.scan_dialog.winfo_exists():
+            self.scan_dialog.lift()
+            return
+        self.scan_dialog = ScanCalibrationDialog(self)
+
     def refresh_calibration_views(self, name: Optional[str] = None, position: Optional[Position] = None) -> None:
         if self.calibration_dialog and self.calibration_dialog.winfo_exists():
             self.calibration_dialog.refresh_offsets(name, position)
@@ -2532,6 +2841,7 @@ class WT4App(tk.Tk):
             self.power_panel.save_settings()
             self.power_panel.stop_log()
             self.power_panel.stop()
+            self.stop_scan()
             self.stop_all()
             for session in self.sessions.values():
                 session.close()

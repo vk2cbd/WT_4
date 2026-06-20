@@ -46,6 +46,13 @@ class PowerConfig:
     warmup_seconds: float = 30.0
 
 
+@dataclass
+class ScanConfig:
+    span_degrees: float = 4.0
+    increment_degrees: float = 0.5
+    dwell_seconds: float = 1.0
+
+
 def load_site_config(path: Union[str, Path]) -> SiteConfig:
     path = Path(path)
     parser = configparser.ConfigParser()
@@ -74,6 +81,32 @@ def load_site_config(path: Union[str, Path]) -> SiteConfig:
         az_slow_threshold_degrees=parser.getfloat("site", "az_slow_threshold_degrees", fallback=old_slow_threshold),
         el_slow_threshold_degrees=parser.getfloat("site", "el_slow_threshold_degrees", fallback=old_slow_threshold),
     )
+
+
+def load_scan_config(path: Union[str, Path]) -> ScanConfig:
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    if path.exists():
+        parser.read(path)
+    return ScanConfig(
+        span_degrees=parser.getfloat("scan", "span_degrees", fallback=4.0),
+        increment_degrees=parser.getfloat("scan", "increment_degrees", fallback=0.5),
+        dwell_seconds=parser.getfloat("scan", "dwell_seconds", fallback=1.0),
+    )
+
+
+def save_scan_config(path: Union[str, Path], scan: ScanConfig) -> None:
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    if path.exists():
+        parser.read(path)
+    parser["scan"] = {
+        "span_degrees": f"{scan.span_degrees:.3f}",
+        "increment_degrees": f"{scan.increment_degrees:.3f}",
+        "dwell_seconds": f"{scan.dwell_seconds:.3f}",
+    }
+    with path.open("w", encoding="utf-8") as handle:
+        parser.write(handle)
 
 
 def load_power_config(path: Union[str, Path]) -> PowerConfig:

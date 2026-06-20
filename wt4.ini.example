@@ -21,6 +21,11 @@ update_rate_hz = 10.0
 smoothing_samples = 3
 warmup_seconds = 30.0
 
+[scan]
+span_degrees = 4.000
+increment_degrees = 0.500
+dwell_seconds = 1.000
+
 [antenna:East]
 port = /dev/ttyUSB0
 baud = 9600

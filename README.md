@@ -121,7 +121,7 @@ The power-meter module currently provides:
 - synchronous RTL-SDR sample capture using `librtlsdr`
 
 The main GUI also includes a compact RTL Power Meter panel. Set frequency in
-MHz, sample rate in ksps, gain, samples/read, GUI refresh rate, averaging, and
+MHz, sample rate in ksps, gain, samples/read in kilosamples, GUI refresh rate, averaging, and
 warm-up seconds, then press `Start Power`. `Sample ksps` sets the RTL sample rate and
 therefore the approximate RF bandwidth accepted by the dongle/driver. `GUI Hz`
 sets the desired power display refresh rate. Set `Samples` to `auto` or `0` to calculate samples/read from
@@ -135,6 +135,14 @@ Use `Start Log` to write a timestamped `wt4_power_YYYYMMDD-HHMMSS.csv` file
 containing power, target position, and the latest antenna positions. This is the
 first step toward source sweep calibration; it is passive and does not command
 the antennas.
+
+`Scan Cal` performs a source-relative calibration scan while normal tracking
+continues. Start tracking Sun, Moon, or a selected source, start the RTL power
+meter, open `Scan Cal`, choose span, increment, and dwell, then run an AZ or EL
+scan. WT4 offsets the live tracking target by each scan point, waits for the
+guarded tracking move, averages power during the dwell, saves
+`wt4_scan_az_*.csv` or `wt4_scan_el_*.csv`, and opens a graph of power versus
+scan offset. Scan defaults are stored in the `[scan]` section of `wt4.ini`.
 
 ## First Use
 
