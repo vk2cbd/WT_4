@@ -657,7 +657,7 @@ class PeakCalibrationDialog(tk.Toplevel):
 
         connected_names = list(app.sessions) or list(app.configs)
         self.antenna_var = tk.StringVar(value=connected_names[0] if connected_names else "")
-        self.source_var = tk.StringVar(value="Sun")
+        self.source_var = tk.StringVar(value=app.default_peak_cal_source_label())
         self.status_var = tk.StringVar(value="Select source and antenna.")
         self.target_var = tk.StringVar(value="Source AZ -- EL --")
         self.position_var = tk.StringVar(value="Antenna AZ -- EL --")
@@ -759,6 +759,11 @@ class PeakCalibrationDialog(tk.Toplevel):
 
     def current_peak_target(self) -> TargetPosition:
         return self.app.target_for_kind(self.source_kind())
+
+    def set_source_label(self, label: str) -> None:
+        if label in self.SOURCE_LABELS:
+            self.source_var.set(label)
+            self.refresh_display(live=True)
 
     def antenna_changed(self) -> None:
         self.app.select_calibration_antenna(self.antenna_var.get())
@@ -2057,6 +2062,13 @@ class WT3App(tk.Tk):
             return self.site.selected_source or "Source"
         return kind
 
+    def default_peak_cal_source_label(self) -> str:
+        if self.tracking_kind == "moon":
+            return "Moon"
+        if self.tracking_kind == "source":
+            return "Selected Source"
+        return "Sun"
+
     def open_limits(self) -> None:
         if not self.configs:
             self.status_var.set("No antenna configs loaded.")
@@ -2099,8 +2111,9 @@ class WT3App(tk.Tk):
         if not self.configs:
             self.status_var.set("No antenna configs loaded.")
             return
+        source_label = self.default_peak_cal_source_label()
         if self.peak_calibration_dialog and self.peak_calibration_dialog.winfo_exists():
-            self.peak_calibration_dialog.refresh_display(live=True)
+            self.peak_calibration_dialog.set_source_label(source_label)
             self.peak_calibration_dialog.lift()
             return
         self.peak_calibration_dialog = PeakCalibrationDialog(self)
