@@ -17,8 +17,8 @@ _UNSIGNED_IQ_POWER_TABLE = tuple(((value - 127.5) / 127.5) ** 2 for value in ran
 @dataclass(frozen=True)
 class PowerMeterConfig:
     center_frequency_hz: int = 1_200_000_000
-    sample_rate_hz: int = 524_288
-    measurement_bandwidth_hz: int = 524_288
+    sample_rate_hz: int = 1_024_000
+    measurement_bandwidth_hz: int = 1_024_000
     update_rate_hz: float = 10.0
     device_index: int = 0
     gain_db: Optional[float] = None
@@ -30,6 +30,8 @@ class PowerMeterConfig:
             raise ValueError("center frequency must be positive")
         if self.sample_rate_hz <= 0:
             raise ValueError("sample rate must be positive")
+        if 300_000 < self.sample_rate_hz < 900_001:
+            raise ValueError("RTL-SDR commonly rejects sample rates between 300000 and 900001 sps; try 1024000")
         if not (0 < self.measurement_bandwidth_hz <= self.sample_rate_hz):
             raise ValueError("measurement bandwidth must be greater than zero and no wider than sample rate")
         if not (1.0 <= self.update_rate_hz <= 50.0):

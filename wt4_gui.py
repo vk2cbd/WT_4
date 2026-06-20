@@ -1528,7 +1528,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.last_reading_time = 0.0
 
         self.freq_var = tk.StringVar(value="1200000000")
-        self.rate_var = tk.StringVar(value="524288")
+        self.rate_var = tk.StringVar(value="1024000")
         self.gain_var = tk.StringVar(value="29.7")
         self.samples_var = tk.StringVar(value="auto")
         self.update_var = tk.StringVar(value="10.0")

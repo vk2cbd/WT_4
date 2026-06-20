@@ -96,34 +96,35 @@ SDR code directly into the antenna GUI.
 The first hardware test is command-line only:
 
 ```bash
-python3 wt4_power_cli.py --freq 1200000000 --rate 524288 --gain 29.7 --samples 0
+python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7 --samples 0
 ```
 
 Use `--count` for a short test:
 
 ```bash
-python3 wt4_power_cli.py --freq 1200000000 --rate 524288 --gain 29.7 --samples 0 --count 20
+python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7 --samples 0 --count 20
 ```
 
 If your tuner works better in automatic gain mode, omit `--gain`.
 Use `--samples 0` to calculate samples/read from sample rate divided by update
-rate. For example, 524288 sps at 10 Hz uses about 52429 IQ samples per power
+rate. For example, 1024000 sps at 10 Hz uses about 102400 IQ samples per power
 reading. Larger manual sample values give more averaging; smaller values give
-faster response.
+faster response. Many RTL-SDR drivers reject sample rates between 300000 and
+900001 sps, so 524288 sps may fail even though it is a useful bandwidth target.
 
 The power-meter module currently provides:
 
 - power-meter configuration defaults
 - a 10 Hz update model
-- a 524288 sps sample-rate default, giving about 524 kHz receiver bandwidth
+- a 1024000 sps sample-rate default known to work with common RTL-SDR drivers
 - a relative dBFS power calculation helper
 - synchronous RTL-SDR sample capture using `librtlsdr`
 
 The main GUI also includes a compact RTL Power Meter panel. Set frequency,
 sample rate in samples/second, gain, samples/read, GUI refresh rate, and
 averaging, then press `Start Power`. `Sample sps` sets the RTL sample rate and
-therefore the approximate RF bandwidth. `GUI Hz` sets the desired power display
-refresh rate. Set `Samples` to `auto` or `0` to calculate samples/read from
+therefore the approximate RF bandwidth accepted by the dongle/driver. `GUI Hz`
+sets the desired power display refresh rate. Set `Samples` to `auto` or `0` to calculate samples/read from
 `Sample sps / GUI Hz`. The displayed value is relative dBFS; less-negative
 values mean stronger received power.
 
