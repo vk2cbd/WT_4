@@ -683,7 +683,6 @@ class PeakCalibrationDialog(tk.Toplevel):
         button = ttk.Button(master, text=text)
         button.bind("<ButtonPress-1>", lambda _event: self.start_jog(direction))
         button.bind("<ButtonRelease-1>", lambda _event: self.stop_jog())
-        button.bind("<Leave>", lambda _event: self.stop_jog())
         return button
 
     def source_kind(self) -> str:
@@ -732,13 +731,16 @@ class PeakCalibrationDialog(tk.Toplevel):
             self.status_var.set("Connect the selected antenna first.")
             return
         try:
+            self.app.prepare_peak_calibration_owner()
+        except Exception as exc:
+            self.status_var.set(str(exc))
+            return
+        try:
             self.app.validate_site(self.app.site)
             self.current_peak_target()
         except Exception as exc:
             self.status_var.set(str(exc))
             return
-        self.app.tracking_stop_event.set()
-        self.app.tracking_active = False
         if self.tracking_axis is not None:
             self.status_var.set("Stop current Peak Cal tracking before starting another axis.")
             return
@@ -799,6 +801,11 @@ class PeakCalibrationDialog(tk.Toplevel):
         session = self.selected_session()
         if session is None or self.jog_thread_active:
             return
+        try:
+            self.app.prepare_peak_calibration_owner()
+        except Exception as exc:
+            self.status_var.set(str(exc))
+            return
         jog_axis = Axis.AZIMUTH if direction in (Direction.AZ_CW, Direction.AZ_CCW) else Axis.ELEVATION
         if self.tracking_axis == jog_axis:
             self.status_var.set(f"Stop {axis_label(jog_axis)} tracking before jogging that axis.")
@@ -830,7 +837,7 @@ class PeakCalibrationDialog(tk.Toplevel):
         panel = self.selected_panel()
         if panel:
             panel.update_position(position)
-        self.status_var.set("Jog stopped.")
+        self.status_var.set("Peak jog ready.")
 
     def finish_jog_fault(self, text: str) -> None:
         self.jog_thread_active = False
@@ -840,6 +847,11 @@ class PeakCalibrationDialog(tk.Toplevel):
         session = self.selected_session()
         if session is None:
             self.status_var.set("Connect the selected antenna first.")
+            return
+        try:
+            self.app.prepare_peak_calibration_owner()
+        except Exception as exc:
+            self.status_var.set(str(exc))
             return
         if self.tracking_axis == axis:
             self.status_var.set(f"Track the other axis before locking {axis_label(axis)} calibration.")
@@ -1573,6 +1585,24 @@ class WT3App(tk.Tk):
         self.tracking_active = False
         self.stop_all()
         self.status_var.set("Stopped.")
+
+    def prepare_peak_calibration_owner(self) -> None:
+        if self.parking_active:
+            raise RuntimeError("Stop parking before using Peak Calibration.")
+        thread = self.tracking_thread
+        if not self.tracking_active and not (thread and thread.is_alive()):
+            return
+
+        self.tracking_stop_event.set()
+        if thread and thread.is_alive() and threading.current_thread() is not thread:
+            max_jog = max((session.config.limits.max_jog_seconds for session in self.sessions.values()), default=60.0)
+            timeout = min(10.0, max(2.0, self.site.track_interval_seconds + max_jog * 0.1))
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                raise RuntimeError("Main tracking is still stopping; try Peak Calibration again in a moment.")
+        self.tracking_active = False
+        self.tracking_kind = None
+        self.status_var.set("Tracking stopped for Peak Calibration.")
 
     def park_all(self) -> None:
         if self.parking_active:
