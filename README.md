@@ -96,34 +96,36 @@ SDR code directly into the antenna GUI.
 The first hardware test is command-line only:
 
 ```bash
-python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7 --samples 32768
+python3 wt4_power_cli.py --freq 1200000000 --rate 524288 --gain 29.7 --samples 0
 ```
 
 Use `--count` for a short test:
 
 ```bash
-python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7 --samples 32768 --count 20
+python3 wt4_power_cli.py --freq 1200000000 --rate 524288 --gain 29.7 --samples 0 --count 20
 ```
 
 If your tuner works better in automatic gain mode, omit `--gain`.
-If the Raspberry Pi still cannot reach 10 Hz, try `--samples 16384`. Larger
-values give more averaging; smaller values give faster response.
+Use `--samples 0` to calculate samples/read from sample rate divided by update
+rate. For example, 524288 sps at 10 Hz uses about 52429 IQ samples per power
+reading. Larger manual sample values give more averaging; smaller values give
+faster response.
 
 The power-meter module currently provides:
 
 - power-meter configuration defaults
 - a 10 Hz update model
-- a 500 kHz measurement-bandwidth default
+- a 524288 sps sample-rate default, giving about 524 kHz receiver bandwidth
 - a relative dBFS power calculation helper
 - synchronous RTL-SDR sample capture using `librtlsdr`
 
-The GUI integration will come after the command-line power stream is stable.
-
 The main GUI also includes a compact RTL Power Meter panel. Set frequency,
-sample rate, gain, samples/read, update rate, and averaging, then press
-`Start Power`. Use `Stop Power` before unplugging or changing RTL settings.
-The displayed value is relative dBFS; less-negative values mean stronger
-received power.
+sample rate in samples/second, gain, samples/read, GUI refresh rate, and
+averaging, then press `Start Power`. `Sample sps` sets the RTL sample rate and
+therefore the approximate RF bandwidth. `GUI Hz` sets the desired power display
+refresh rate. Set `Samples` to `auto` or `0` to calculate samples/read from
+`Sample sps / GUI Hz`. The displayed value is relative dBFS; less-negative
+values mean stronger received power.
 
 ## First Use
 

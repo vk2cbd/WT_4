@@ -1528,9 +1528,9 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.last_reading_time = 0.0
 
         self.freq_var = tk.StringVar(value="1200000000")
-        self.rate_var = tk.StringVar(value="1024000")
+        self.rate_var = tk.StringVar(value="524288")
         self.gain_var = tk.StringVar(value="29.7")
-        self.samples_var = tk.StringVar(value="32768")
+        self.samples_var = tk.StringVar(value="auto")
         self.update_var = tk.StringVar(value="10.0")
         self.smooth_var = tk.StringVar(value="3")
         self.power_var = tk.StringVar(value="--.-- dBFS")
@@ -1541,10 +1541,10 @@ class PowerMeterPanel(ttk.LabelFrame):
         for column in range(12):
             fields.columnconfigure(column, weight=1 if column % 2 else 0)
         self._entry(fields, "Freq", self.freq_var, 0, width=11)
-        self._entry(fields, "Rate", self.rate_var, 2, width=8)
+        self._entry(fields, "Sample sps", self.rate_var, 2, width=8)
         self._entry(fields, "Gain", self.gain_var, 4, width=6)
         self._entry(fields, "Samples", self.samples_var, 6, width=7)
-        self._entry(fields, "Hz", self.update_var, 8, width=5)
+        self._entry(fields, "GUI Hz", self.update_var, 8, width=5)
         self._entry(fields, "Avg", self.smooth_var, 10, width=4)
 
         controls = ttk.Frame(self)
@@ -1561,14 +1561,17 @@ class PowerMeterPanel(ttk.LabelFrame):
     def config_from_fields(self) -> PowerMeterConfig:
         gain_text = self.gain_var.get().strip().lower()
         gain = None if gain_text in ("", "auto") else float(gain_text)
-        samples = int(self.samples_var.get())
+        samples_text = self.samples_var.get().strip().lower()
+        samples = None if samples_text in ("", "auto", "0") else int(samples_text)
+        sample_rate = int(self.rate_var.get())
         config = PowerMeterConfig(
             center_frequency_hz=int(self.freq_var.get()),
-            sample_rate_hz=int(self.rate_var.get()),
+            sample_rate_hz=sample_rate,
+            measurement_bandwidth_hz=sample_rate,
             update_rate_hz=float(self.update_var.get()),
             gain_db=gain,
             smoothing_samples=max(1, int(self.smooth_var.get())),
-            samples_per_read=None if samples == 0 else samples,
+            samples_per_read=samples,
         )
         config.validate()
         return config
@@ -1589,7 +1592,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.last_reading_time = 0.0
         self.power_var.set("--.-- dBFS")
         self.stop_event.clear()
-        self.status_var.set("Starting...")
+        self.status_var.set(f"Starting... {config.samples_per_update} samples/read")
         self.thread = threading.Thread(target=self.power_loop, args=(config,), daemon=True)
         self.thread.start()
 

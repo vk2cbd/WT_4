@@ -13,8 +13,8 @@ from wt4_power import PowerMeterConfig, RtlPowerMeter
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stream RTL-SDR relative power readings.")
     parser.add_argument("--freq", type=int, default=1_200_000_000, help="Center frequency in Hz.")
-    parser.add_argument("--rate", type=int, default=1_024_000, help="RTL sample rate in samples/second.")
-    parser.add_argument("--bandwidth", type=int, default=500_000, help="Measurement bandwidth hint in Hz.")
+    parser.add_argument("--rate", type=int, default=524_288, help="RTL sample rate in samples/second.")
+    parser.add_argument("--bandwidth", type=int, default=None, help="Measurement bandwidth hint in Hz. Default follows sample rate.")
     parser.add_argument("--update-rate", type=float, default=10.0, help="Power update rate in Hz.")
     parser.add_argument("--device", type=int, default=0, help="RTL-SDR device index.")
     parser.add_argument("--gain", type=float, default=None, help="Manual tuner gain in dB. Omit for auto gain.")
@@ -22,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--samples",
         type=int,
-        default=32_768,
+        default=0,
         help="IQ samples per power reading. Use 0 for sample_rate/update_rate.",
     )
     return parser.parse_args()
@@ -33,7 +33,7 @@ def main() -> int:
     config = PowerMeterConfig(
         center_frequency_hz=args.freq,
         sample_rate_hz=args.rate,
-        measurement_bandwidth_hz=args.bandwidth,
+        measurement_bandwidth_hz=args.rate if args.bandwidth is None else args.bandwidth,
         update_rate_hz=args.update_rate,
         device_index=args.device,
         gain_db=args.gain,

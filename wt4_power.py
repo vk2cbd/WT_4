@@ -17,13 +17,13 @@ _UNSIGNED_IQ_POWER_TABLE = tuple(((value - 127.5) / 127.5) ** 2 for value in ran
 @dataclass(frozen=True)
 class PowerMeterConfig:
     center_frequency_hz: int = 1_200_000_000
-    sample_rate_hz: int = 1_024_000
-    measurement_bandwidth_hz: int = 500_000
+    sample_rate_hz: int = 524_288
+    measurement_bandwidth_hz: int = 524_288
     update_rate_hz: float = 10.0
     device_index: int = 0
     gain_db: Optional[float] = None
     smoothing_samples: int = 3
-    samples_per_read: Optional[int] = 32_768
+    samples_per_read: Optional[int] = None
 
     def validate(self) -> None:
         if self.center_frequency_hz <= 0:
