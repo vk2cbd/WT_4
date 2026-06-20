@@ -425,11 +425,13 @@ class CalibrationDialog(tk.Toplevel):
     def __init__(self, app: "WT3App") -> None:
         super().__init__(app)
         self.app = app
+        self.closed = False
         self.title("Calibration")
         self.resizable(False, False)
         self.transient(app)
         self.grab_set()
         self.entries: dict[str, dict[str, tk.StringVar]] = {}
+        self.protocol("WM_DELETE_WINDOW", self.close)
 
         tabs = ttk.Notebook(self)
         tabs.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
@@ -486,7 +488,32 @@ class CalibrationDialog(tk.Toplevel):
         buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         buttons.grid(row=1, column=0, sticky="ew")
         buttons.columnconfigure(0, weight=1)
-        ttk.Button(buttons, text="Close", command=self.destroy).grid(row=0, column=1)
+        ttk.Button(buttons, text="Close", command=self.close).grid(row=0, column=1)
+
+    def refresh_offsets(self, name: Optional[str] = None, position: Optional[Position] = None) -> None:
+        if self.closed:
+            return
+        names = [name] if name else list(self.entries)
+        for entry_name in names:
+            values = self.entries.get(entry_name)
+            config = self.app.configs.get(entry_name)
+            if not values or not config:
+                continue
+            values["az_offset"].set(f"{config.calibration.az_offset:0.2f}")
+            values["el_offset"].set(f"{config.calibration.el_offset:0.2f}")
+            panel = self.app.panels.get(entry_name)
+            panel_position = position if entry_name == name else panel.session.last_position if panel and panel.session else None
+            if panel_position:
+                values["actual_az"].set(f"{panel_position.azimuth:0.2f}")
+                values["actual_el"].set(f"{panel_position.elevation:0.2f}")
+                values["raw_az"].set(f"{panel_position.raw_azimuth:0.2f}")
+                values["raw_el"].set(f"{panel_position.raw_elevation:0.2f}")
+
+    def close(self) -> None:
+        self.closed = True
+        if self.app.calibration_dialog is self:
+            self.app.calibration_dialog = None
+        self.destroy()
 
     def calibrate_manual(self, name: str) -> None:
         values = self.entries[name]
@@ -575,6 +602,7 @@ class CalibrationDialog(tk.Toplevel):
         values["el_offset"].set(f"{panel.session.config.calibration.el_offset:0.2f}")
         panel.clear_message()
         panel.update_position(position)
+        self.app.refresh_calibration_views(name, position)
 
     def finish_offset_apply(self, name: str, panel: Optional["AntennaPanel"], position: Optional[Position]) -> None:
         config = self.app.configs[name]
@@ -588,6 +616,7 @@ class CalibrationDialog(tk.Toplevel):
             values["raw_el"].set(f"{position.raw_elevation:0.2f}")
             panel.clear_message()
             panel.update_position(position)
+        self.app.refresh_calibration_views(name, position)
 
 
 class PeakCalibrationDialog(tk.Toplevel):
@@ -724,6 +753,21 @@ class PeakCalibrationDialog(tk.Toplevel):
                 f"Offsets AZ {config.calibration.az_offset:+0.2f} EL {config.calibration.el_offset:+0.2f}"
             )
         self.after(1000, self.refresh_display)
+
+    def refresh_offsets(self, name: Optional[str] = None, position: Optional[Position] = None) -> None:
+        if self.closed:
+            return
+        selected_name = self.antenna_var.get()
+        if name is not None and name != selected_name:
+            return
+        config = self.app.configs.get(selected_name)
+        if config:
+            self.offset_var.set(
+                f"Offsets AZ {config.calibration.az_offset:+0.2f} EL {config.calibration.el_offset:+0.2f}"
+            )
+        if position:
+            self.position_var.set(f"Antenna AZ {position.azimuth:0.2f} EL {position.elevation:0.2f}")
+            self.raw_var.set(f"Raw AZ {position.raw_azimuth:0.2f} EL {position.raw_elevation:0.2f}")
 
     def start_axis_tracking(self, axis: Axis) -> None:
         session = self.selected_session()
@@ -883,6 +927,7 @@ class PeakCalibrationDialog(tk.Toplevel):
         if panel:
             panel.update_position(position)
             panel.clear_message()
+        self.app.refresh_calibration_views(self.antenna_var.get(), position)
         self.status_var.set(
             f"Locked {axis_label(axis)} to {target.name}: offset {old_offset:+0.2f} -> {new_offset:+0.2f}."
         )
@@ -894,6 +939,8 @@ class PeakCalibrationDialog(tk.Toplevel):
         self.closed = True
         self.track_stop_event.set()
         self.jog_stop_event.set()
+        if self.app.peak_calibration_dialog is self:
+            self.app.peak_calibration_dialog = None
         self.destroy()
 
 
@@ -1437,6 +1484,8 @@ class WT3App(tk.Tk):
         self.local_time_var = tk.StringVar(value="Local --")
         self.lmst_var = tk.StringVar(value="LMST --")
         self.utc_var = tk.StringVar(value="UTC --")
+        self.calibration_dialog: Optional[CalibrationDialog] = None
+        self.peak_calibration_dialog: Optional[PeakCalibrationDialog] = None
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -1976,13 +2025,27 @@ class WT3App(tk.Tk):
         if not self.configs:
             self.status_var.set("No antenna configs loaded.")
             return
-        CalibrationDialog(self)
+        if self.calibration_dialog and self.calibration_dialog.winfo_exists():
+            self.calibration_dialog.refresh_offsets()
+            self.calibration_dialog.lift()
+            return
+        self.calibration_dialog = CalibrationDialog(self)
 
     def open_peak_calibration(self) -> None:
         if not self.configs:
             self.status_var.set("No antenna configs loaded.")
             return
-        PeakCalibrationDialog(self)
+        if self.peak_calibration_dialog and self.peak_calibration_dialog.winfo_exists():
+            self.peak_calibration_dialog.refresh_offsets()
+            self.peak_calibration_dialog.lift()
+            return
+        self.peak_calibration_dialog = PeakCalibrationDialog(self)
+
+    def refresh_calibration_views(self, name: Optional[str] = None, position: Optional[Position] = None) -> None:
+        if self.calibration_dialog and self.calibration_dialog.winfo_exists():
+            self.calibration_dialog.refresh_offsets(name, position)
+        if self.peak_calibration_dialog and self.peak_calibration_dialog.winfo_exists():
+            self.peak_calibration_dialog.refresh_offsets(name, position)
 
     def open_encoders(self) -> None:
         if not self.configs:
