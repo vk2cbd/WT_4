@@ -145,8 +145,10 @@ nominal source, waits for the guarded tracking move, and averages power during
 the dwell. Repeated scans always run from `-span` to `+span`; matching offset
 points are averaged before plotting. The raw and averaged measurements are saved
 to `wt4_scan_<antenna>_az_*.csv` or `wt4_scan_<antenna>_el_*.csv`, and a graph
-of averaged power versus scan offset opens when complete. Scan defaults are
-stored in the `[scan]` section of `wt4.ini`.
+of averaged power versus scan offset opens when complete. The graph includes a
+vertical boresight line at zero offset and an automatic Gaussian fit with a
+linear baseline term. The fit summary reports centre offset, FWHM, fitted peak,
+and RMS residual. Scan defaults are stored in the `[scan]` section of `wt4.ini`.
 
 ## First Use
 

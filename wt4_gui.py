@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import queue
 import threading
 import time
@@ -1898,20 +1899,35 @@ class ScanGraphDialog(tk.Toplevel):
         ttk.Label(body, text=f"{antenna_name} {axis_label(axis)} scan saved to {csv_path.name}").grid(
             row=0, column=0, sticky="w"
         )
+        self.summary_var = tk.StringVar(value="Fit --")
         canvas = tk.Canvas(body, width=520, height=300, background="white")
         canvas.grid(row=1, column=0, pady=(8, 0))
         self.draw_plot(canvas, axis, rows)
-        ttk.Button(body, text="Close", command=self.destroy).grid(row=2, column=0, sticky="e", pady=(8, 0))
+        ttk.Label(body, textvariable=self.summary_var).grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Button(body, text="Close", command=self.destroy).grid(row=3, column=0, sticky="e", pady=(8, 0))
 
     def draw_plot(self, canvas: tk.Canvas, axis: Axis, rows: list[dict[str, object]]) -> None:
         width = int(canvas["width"])
         height = int(canvas["height"])
         left, right, top, bottom = 55, width - 20, 20, height - 45
-        powers = [float(row["power_dbfs"]) for row in rows if row.get("power_dbfs") is not None]
-        offsets = [float(row["offset_degrees"]) for row in rows]
-        if not powers or not offsets:
+        scan_points = [
+            (float(row["offset_degrees"]), float(row["power_dbfs"]))
+            for row in rows
+            if row.get("power_dbfs") is not None
+        ]
+        if not scan_points:
             canvas.create_text(width / 2, height / 2, text="No scan data")
             return
+        offsets = [point[0] for point in scan_points]
+        powers = [point[1] for point in scan_points]
+        fit = self.fit_gaussian_with_slope(scan_points)
+        fit_points: list[tuple[float, float]] = []
+        if fit:
+            min_fit_x, max_fit_x = min(offsets), max(offsets)
+            for index in range(101):
+                x_value = min_fit_x + (max_fit_x - min_fit_x) * index / 100.0
+                fit_points.append((x_value, self.evaluate_fit(fit, x_value)))
+            powers.extend(y for _x, y in fit_points)
         min_x, max_x = min(offsets), max(offsets)
         min_y, max_y = min(powers), max(powers)
         if min_x == max_x:
@@ -1925,21 +1941,164 @@ class ScanGraphDialog(tk.Toplevel):
         canvas.create_line(left, top, left, bottom)
         canvas.create_text((left + right) / 2, height - 15, text=f"{axis_label(axis)} offset degrees")
         canvas.create_text(18, (top + bottom) / 2, text="dBFS", angle=90)
+        self.draw_boresight(canvas, left, right, top, bottom, min_x, max_x)
 
-        points: list[tuple[float, float]] = []
-        for row in rows:
-            power = row.get("power_dbfs")
-            if power is None:
-                continue
-            x_value = float(row["offset_degrees"])
-            y_value = float(power)
-            x = left + (x_value - min_x) / (max_x - min_x) * (right - left)
-            y = bottom - (y_value - min_y) / (max_y - min_y) * (bottom - top)
-            points.append((x, y))
+        if fit_points:
+            canvas_fit_points = [
+                self.canvas_point(x_value, y_value, left, right, top, bottom, min_x, max_x, min_y, max_y)
+                for x_value, y_value in fit_points
+            ]
+            for start, end in zip(canvas_fit_points, canvas_fit_points[1:]):
+                canvas.create_line(start[0], start[1], end[0], end[1], fill="#d62728", width=2)
+            fwhm = 2.35482 * fit["sigma"]
+            self.summary_var.set(
+                f"Fit centre {fit['center']:+0.3f} deg, FWHM {fwhm:0.3f} deg, "
+                f"peak {fit['peak']:0.2f} dBFS, RMS {fit['rms']:0.3f} dB"
+            )
+        else:
+            self.summary_var.set("Fit unavailable")
+
+        points = [
+            self.canvas_point(x_value, y_value, left, right, top, bottom, min_x, max_x, min_y, max_y)
+            for x_value, y_value in scan_points
+        ]
         for start, end in zip(points, points[1:]):
             canvas.create_line(start[0], start[1], end[0], end[1], fill="#0057b8", width=2)
         for x, y in points:
             canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#0057b8", outline="")
+
+    def canvas_point(
+        self,
+        x_value: float,
+        y_value: float,
+        left: int,
+        right: int,
+        top: int,
+        bottom: int,
+        min_x: float,
+        max_x: float,
+        min_y: float,
+        max_y: float,
+    ) -> tuple[float, float]:
+        x = left + (x_value - min_x) / (max_x - min_x) * (right - left)
+        y = bottom - (y_value - min_y) / (max_y - min_y) * (bottom - top)
+        return x, y
+
+    def draw_boresight(
+        self,
+        canvas: tk.Canvas,
+        left: int,
+        right: int,
+        top: int,
+        bottom: int,
+        min_x: float,
+        max_x: float,
+    ) -> None:
+        if not (min_x <= 0.0 <= max_x):
+            return
+        x, _y = self.canvas_point(0.0, 0.0, left, right, top, bottom, min_x, max_x, 0.0, 1.0)
+        canvas.create_line(x, top, x, bottom, fill="#444444", dash=(4, 3), width=2)
+        canvas.create_text(x + 4, top + 10, text="boresight", anchor="w", fill="#444444")
+
+    def fit_gaussian_with_slope(self, points: list[tuple[float, float]]) -> Optional[dict[str, float]]:
+        if len(points) < 5:
+            return None
+        points = sorted(points)
+        xs = [point[0] for point in points]
+        ys = [point[1] for point in points]
+        min_x, max_x = min(xs), max(xs)
+        span = max_x - min_x
+        if span <= 0.0:
+            return None
+        peak_x = xs[ys.index(max(ys))]
+        sigma_min = max(span / 30.0, 0.02)
+        sigma_max = max(span, sigma_min * 2.0)
+        center_start = max(min_x, peak_x - span * 0.25)
+        center_stop = min(max_x, peak_x + span * 0.25)
+        best: Optional[dict[str, float]] = None
+        for center in self.fit_range(center_start, center_stop, 41):
+            for sigma in self.fit_range(sigma_min, sigma_max, 50):
+                fit = self.solve_linear_fit(points, center, sigma)
+                if fit and fit["amplitude"] > 0.0 and (best is None or fit["sse"] < best["sse"]):
+                    best = fit
+        if not best:
+            return None
+        for center_width, sigma_factor in ((span * 0.08, 0.35), (span * 0.03, 0.18)):
+            center_start = max(min_x, best["center"] - center_width)
+            center_stop = min(max_x, best["center"] + center_width)
+            sigma_start = max(sigma_min, best["sigma"] * (1.0 - sigma_factor))
+            sigma_stop = min(sigma_max, best["sigma"] * (1.0 + sigma_factor))
+            for center in self.fit_range(center_start, center_stop, 41):
+                for sigma in self.fit_range(sigma_start, sigma_stop, 41):
+                    fit = self.solve_linear_fit(points, center, sigma)
+                    if fit and fit["amplitude"] > 0.0 and fit["sse"] < best["sse"]:
+                        best = fit
+        best["rms"] = math.sqrt(best["sse"] / len(points))
+        best["peak"] = self.evaluate_fit(best, best["center"])
+        return best
+
+    def fit_range(self, start: float, stop: float, count: int) -> list[float]:
+        if count <= 1 or start == stop:
+            return [start]
+        return [start + (stop - start) * index / (count - 1) for index in range(count)]
+
+    def solve_linear_fit(
+        self,
+        points: list[tuple[float, float]],
+        center: float,
+        sigma: float,
+    ) -> Optional[dict[str, float]]:
+        rows = []
+        for x_value, y_value in points:
+            gaussian = math.exp(-0.5 * ((x_value - center) / sigma) ** 2)
+            rows.append((1.0, x_value, gaussian, y_value))
+        normal = [[0.0 for _ in range(3)] for _ in range(3)]
+        rhs = [0.0, 0.0, 0.0]
+        for row in rows:
+            values = row[:3]
+            y_value = row[3]
+            for i in range(3):
+                rhs[i] += values[i] * y_value
+                for j in range(3):
+                    normal[i][j] += values[i] * values[j]
+        solution = self.solve_3x3(normal, rhs)
+        if solution is None:
+            return None
+        baseline, slope, amplitude = solution
+        sse = 0.0
+        for x_value, y_value in points:
+            predicted = baseline + slope * x_value + amplitude * math.exp(-0.5 * ((x_value - center) / sigma) ** 2)
+            sse += (y_value - predicted) ** 2
+        return {
+            "baseline": baseline,
+            "slope": slope,
+            "amplitude": amplitude,
+            "center": center,
+            "sigma": sigma,
+            "sse": sse,
+        }
+
+    def solve_3x3(self, matrix: list[list[float]], rhs: list[float]) -> Optional[list[float]]:
+        augmented = [matrix[row][:] + [rhs[row]] for row in range(3)]
+        for column in range(3):
+            pivot = max(range(column, 3), key=lambda row: abs(augmented[row][column]))
+            if abs(augmented[pivot][column]) < 1e-12:
+                return None
+            augmented[column], augmented[pivot] = augmented[pivot], augmented[column]
+            pivot_value = augmented[column][column]
+            for item in range(column, 4):
+                augmented[column][item] /= pivot_value
+            for row in range(3):
+                if row == column:
+                    continue
+                factor = augmented[row][column]
+                for item in range(column, 4):
+                    augmented[row][item] -= factor * augmented[column][item]
+        return [augmented[row][3] for row in range(3)]
+
+    def evaluate_fit(self, fit: dict[str, float], x_value: float) -> float:
+        gaussian = math.exp(-0.5 * ((x_value - fit["center"]) / fit["sigma"]) ** 2)
+        return fit["baseline"] + fit["slope"] * x_value + fit["amplitude"] * gaussian
 
     def draw_graticule(
         self,
