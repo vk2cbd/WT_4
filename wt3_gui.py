@@ -1538,6 +1538,7 @@ class WT3App(tk.Tk):
         self.target_name_var = tk.StringVar(value="Target --")
         self.target_az_var = tk.StringVar(value="AZ --")
         self.target_el_var = tk.StringVar(value="EL --")
+        self.target_ha_var = tk.StringVar(value="HA --")
         self.sun_ref_var = tk.StringVar(value="Sun AZ -- EL --")
         self.moon_ref_var = tk.StringVar(value="Moon AZ -- EL --")
         self.local_time_var = tk.StringVar(value="Local --")
@@ -1576,6 +1577,9 @@ class WT3App(tk.Tk):
         ttk.Label(target_bar, textvariable=self.target_name_var).pack(side="left")
         ttk.Label(target_bar, textvariable=self.target_az_var).pack(side="left", padx=(16, 0))
         ttk.Label(target_bar, textvariable=self.target_el_var).pack(side="left", padx=(16, 0))
+        target_detail_bar = ttk.Frame(self, padding=(8, 0, 8, 2))
+        target_detail_bar.pack(fill="x")
+        ttk.Label(target_detail_bar, textvariable=self.target_ha_var).pack(side="left")
 
         body = ttk.Frame(self, padding=8)
         body.pack(fill="both", expand=True)
@@ -1691,6 +1695,8 @@ class WT3App(tk.Tk):
     def stop_sun_tracking(self) -> None:
         self.tracking_stop_event.set()
         self.tracking_active = False
+        self.tracking_kind = ""
+        self.target_ha_var.set("HA --")
         self.stop_all()
         self.status_var.set("Stopped.")
 
@@ -1943,6 +1949,24 @@ class WT3App(tk.Tk):
         self.target_name_var.set(target.name)
         self.target_az_var.set(f"AZ {target.azimuth:0.2f}")
         self.target_el_var.set(f"EL {target.elevation:0.2f}")
+        self.target_ha_var.set(self.current_source_hour_angle_text())
+
+    def current_source_hour_angle_text(self) -> str:
+        if self.tracking_kind != "source":
+            return "HA --"
+        try:
+            source = self.selected_source()
+        except RuntimeError:
+            return "HA --"
+        hour_angle_degrees = local_sidereal_time(self.site.longitude, datetime.now(timezone.utc)) - source.ra_hours * 15.0
+        while hour_angle_degrees <= -180.0:
+            hour_angle_degrees += 360.0
+        while hour_angle_degrees > 180.0:
+            hour_angle_degrees -= 360.0
+        sign = "+" if hour_angle_degrees >= 0.0 else "-"
+        total_minutes = int(round(abs(hour_angle_degrees) / 15.0 * 60.0))
+        hours, minutes = divmod(total_minutes, 60)
+        return f"HA {sign}{hours:02d}:{minutes:02d}"
 
     def slew_all_to_target(self, target: TargetPosition, mode: str, show_slewing: bool = True) -> TargetPosition:
         errors: list[str] = []
@@ -2026,6 +2050,8 @@ class WT3App(tk.Tk):
     def finish_tracking_fault(self, message: str) -> None:
         self.tracking_stop_event.set()
         self.tracking_active = False
+        self.tracking_kind = ""
+        self.target_ha_var.set("HA --")
         self.status_var.set(f"Tracking fault: {message}")
         for panel in self.panels.values():
             if panel.session and panel.status_var.get() in ("SLEWING", "TRACKING"):
