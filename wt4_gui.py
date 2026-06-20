@@ -1525,6 +1525,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.thread: Optional[threading.Thread] = None
         self.meter: Optional[RtlPowerMeter] = None
         self.power_values: list[float] = []
+        self.last_reading_time = 0.0
 
         self.freq_var = tk.StringVar(value="1200000000")
         self.rate_var = tk.StringVar(value="1024000")
@@ -1574,7 +1575,10 @@ class PowerMeterPanel(ttk.LabelFrame):
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
-            self.status_var.set("Already running")
+            if self.last_reading_time and time.monotonic() - self.last_reading_time < 2.0:
+                self.status_var.set("Already running")
+            else:
+                self.status_var.set("Running but no readings; press Stop Power and wait.")
             return
         try:
             config = self.config_from_fields()
@@ -1582,6 +1586,8 @@ class PowerMeterPanel(ttk.LabelFrame):
             self.status_var.set(str(exc))
             return
         self.power_values.clear()
+        self.last_reading_time = 0.0
+        self.power_var.set("--.-- dBFS")
         self.stop_event.clear()
         self.status_var.set("Starting...")
         self.thread = threading.Thread(target=self.power_loop, args=(config,), daemon=True)
@@ -1589,11 +1595,14 @@ class PowerMeterPanel(ttk.LabelFrame):
 
     def stop(self) -> None:
         self.stop_event.set()
-        meter = self.meter
-        if meter:
-            meter.close()
+        if self.thread and self.thread.is_alive():
+            meter = self.meter
+            if meter:
+                meter.cancel()
             self.status_var.set("Stopping...")
         else:
+            self.thread = None
+            self.meter = None
             self.status_var.set("Stopped")
 
     def power_loop(self, config: PowerMeterConfig) -> None:
@@ -1617,6 +1626,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         except ValueError:
             smoothing = 1
         self.power_values.append(reading.power_dbfs)
+        self.last_reading_time = time.monotonic()
         self.power_values = self.power_values[-smoothing:]
         average = sum(self.power_values) / len(self.power_values)
         self.power_var.set(f"{average:0.2f} dBFS")
@@ -1625,6 +1635,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.status_var.set(text)
 
     def finish_stopped(self, _unused: object) -> None:
+        self.thread = None
         if self.stop_event.is_set():
             self.status_var.set("Stopped")
 
