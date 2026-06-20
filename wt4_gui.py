@@ -1897,14 +1897,11 @@ class ScanGraphDialog(tk.Toplevel):
         if min_y == max_y:
             min_y -= 0.5
             max_y += 0.5
+        self.draw_graticule(canvas, left, right, top, bottom, min_x, max_x, min_y, max_y)
         canvas.create_line(left, bottom, right, bottom)
         canvas.create_line(left, top, left, bottom)
         canvas.create_text((left + right) / 2, height - 15, text=f"{axis_label(axis)} offset degrees")
         canvas.create_text(18, (top + bottom) / 2, text="dBFS", angle=90)
-        canvas.create_text(left, bottom + 14, text=f"{min_x:0.1f}", anchor="n")
-        canvas.create_text(right, bottom + 14, text=f"{max_x:0.1f}", anchor="n")
-        canvas.create_text(left - 8, bottom, text=f"{min_y:0.1f}", anchor="e")
-        canvas.create_text(left - 8, top, text=f"{max_y:0.1f}", anchor="e")
 
         points: list[tuple[float, float]] = []
         for row in rows:
@@ -1920,6 +1917,32 @@ class ScanGraphDialog(tk.Toplevel):
             canvas.create_line(start[0], start[1], end[0], end[1], fill="#0057b8", width=2)
         for x, y in points:
             canvas.create_oval(x - 3, y - 3, x + 3, y + 3, fill="#0057b8", outline="")
+
+    def draw_graticule(
+        self,
+        canvas: tk.Canvas,
+        left: int,
+        right: int,
+        top: int,
+        bottom: int,
+        min_x: float,
+        max_x: float,
+        min_y: float,
+        max_y: float,
+    ) -> None:
+        divisions = 5
+        grid_color = "#d9d9d9"
+        for index in range(divisions + 1):
+            fraction = index / divisions
+            x = left + fraction * (right - left)
+            x_value = min_x + fraction * (max_x - min_x)
+            canvas.create_line(x, top, x, bottom, fill=grid_color)
+            canvas.create_text(x, bottom + 14, text=f"{x_value:0.1f}", anchor="n")
+
+            y = bottom - fraction * (bottom - top)
+            y_value = min_y + fraction * (max_y - min_y)
+            canvas.create_line(left, y, right, y, fill=grid_color)
+            canvas.create_text(left - 8, y, text=f"{y_value:0.1f}", anchor="e")
 
 
 class WT4App(tk.Tk):
