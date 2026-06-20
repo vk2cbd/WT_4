@@ -142,7 +142,7 @@ meter, open `Scan Cal`, choose the antenna, span, increment, dwell, and number
 of scans, then run an AZ or EL scan. WT4 offsets only the selected antenna's
 live tracking target by each scan point while the other antenna remains on the
 nominal source, waits for the guarded tracking move, and averages power during
-the dwell. Repeated scans always run from `-span` to `+span`; matching offset
+the dwell. Repeated scans always run from `+span` to `-span`; matching offset
 points are averaged before plotting. The raw and averaged measurements are saved
 to `wt4_scan_<antenna>_az_*.csv` or `wt4_scan_<antenna>_el_*.csv`, and a graph
 of averaged power versus scan offset opens when complete. The graph includes a

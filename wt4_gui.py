@@ -2378,13 +2378,13 @@ class WT4App(tk.Tk):
 
     def scan_offsets(self, config: ScanConfig) -> list[float]:
         offsets: list[float] = []
-        value = -config.span_degrees
-        limit = config.span_degrees + config.increment_degrees * 0.5
-        while value <= limit:
+        value = config.span_degrees
+        limit = -config.span_degrees - config.increment_degrees * 0.5
+        while value >= limit:
             offsets.append(round(value, 6))
-            value += config.increment_degrees
-        if offsets and offsets[-1] > config.span_degrees:
-            offsets[-1] = config.span_degrees
+            value -= config.increment_degrees
+        if offsets and offsets[-1] < -config.span_degrees:
+            offsets[-1] = -config.span_degrees
         return offsets
 
     def scan_worker(self, axis: Axis, config: ScanConfig, dialog: ScanCalibrationDialog) -> None:
