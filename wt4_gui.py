@@ -1533,7 +1533,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.samples_var = tk.StringVar(value="auto")
         self.update_var = tk.StringVar(value="10.0")
         self.smooth_var = tk.StringVar(value="3")
-        self.power_var = tk.StringVar(value="--.-- dBFS")
+        self.power_var = tk.StringVar(value="--.- dBFS")
         self.status_var = tk.StringVar(value="Stopped")
 
         fields = ttk.Frame(self)
@@ -1590,7 +1590,7 @@ class PowerMeterPanel(ttk.LabelFrame):
             return
         self.power_values.clear()
         self.last_reading_time = 0.0
-        self.power_var.set("--.-- dBFS")
+        self.power_var.set("--.- dBFS")
         self.stop_event.clear()
         self.status_var.set(f"Starting... {config.samples_per_update} samples/read")
         self.thread = threading.Thread(target=self.power_loop, args=(config,), daemon=True)
@@ -1632,7 +1632,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.last_reading_time = time.monotonic()
         self.power_values = self.power_values[-smoothing:]
         average = sum(self.power_values) / len(self.power_values)
-        self.power_var.set(f"{average:0.2f} dBFS")
+        self.power_var.set(f"{average:0.1f} dBFS")
 
     def set_status(self, text: str) -> None:
         self.status_var.set(text)
@@ -1640,6 +1640,9 @@ class PowerMeterPanel(ttk.LabelFrame):
     def finish_stopped(self, _unused: object) -> None:
         self.thread = None
         if self.stop_event.is_set():
+            self.power_values.clear()
+            self.last_reading_time = 0.0
+            self.power_var.set("--.- dBFS")
             self.status_var.set("Stopped")
 
 
