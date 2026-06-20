@@ -1,6 +1,6 @@
-# WT3 Two-Antenna Safety Controller
+# WT4 Two-Antenna Safety Controller
 
-WT3 is a GUI controller for two WinTrak Arduino/SVH3 antenna drive units.
+WT4 is a GUI controller for two WinTrak Arduino/SVH3 antenna drive units.
 
 It keeps the decoded serial protocol from WT_1, but adds the pieces needed
 before automatic tracking is safe:
@@ -15,6 +15,7 @@ before automatic tracking is safe:
 - stop per antenna and stop all
 - disconnect/reconnect from the serial controllers
 - front-panel OLED updates with safety state instead of frequency
+- a separate power-meter module boundary ready for RTL-SDR integration
 
 ## Install
 
@@ -28,8 +29,8 @@ sudo apt install -y python3-serial python3-tk
 Copy and edit the config:
 
 ```bash
-cp wt3.ini.example wt3.ini
-nano wt3.ini
+cp wt4.ini.example wt4.ini
+nano wt4.ini
 ```
 
 The antenna labels shown in the GUI and on the OLED come from the config
@@ -78,18 +79,32 @@ ls -l /dev/serial/by-id/
 ## Run
 
 ```bash
-python3 wt3_gui.py
+python3 wt4_gui.py
 ```
 
 Or specify another config:
 
 ```bash
-python3 wt3_gui.py --config wt3.ini
+python3 wt4_gui.py --config wt4.ini
 ```
+
+## RTL Power Meter Status
+
+WT4 starts the RTL power-meter work as a separate subsystem rather than adding
+SDR code directly into the antenna GUI. The first boundary is `wt4_power.py`,
+which defines:
+
+- power-meter configuration defaults
+- a 10 Hz update model
+- a 500 kHz measurement-bandwidth default
+- a relative dBFS power calculation helper
+
+The first hardware-backed version will add RTL-SDR device I/O behind this
+module, then feed only compact power readings into the Tk GUI.
 
 ## First Use
 
-1. Check `wt3.ini` ports and limits.
+1. Check `wt4.ini` ports and limits.
 2. Start the GUI.
 3. Press `Connect`.
 4. Confirm calibrated positions display for both antennas.
@@ -109,7 +124,7 @@ For each antenna:
 3. Enter the actual AZ and EL in the antenna tab.
 4. Press `Calibrate Manual`.
 
-The GUI reads the raw encoder positions and stores offsets in `wt3.ini`:
+The GUI reads the raw encoder positions and stores offsets in `wt4.ini`:
 
 ```ini
 az_offset = ...
@@ -140,7 +155,7 @@ source power, then locks only the manually peaked axis with one button press:
 5. Press `LOCK EL CAL` or `LOCK AZ CAL`.
 
 The lock button reads the raw encoder position and source coordinate at that
-moment, updates only the selected axis offset, saves `wt3.ini`, and leaves the
+moment, updates only the selected axis offset, saves `wt4.ini`, and leaves the
 other axis offset unchanged.
 
 ## Encoder Scan
@@ -157,9 +172,9 @@ F0 02 HH LL   set AZ Arduino position
 F1 02 HH LL   set EL Arduino position
 ```
 
-The value is encoded in hundredths of a degree. WT3 immediately reads the axis
+The value is encoded in hundredths of a degree. WT4 immediately reads the axis
 back and confirms it matches. A successful Arduino position write resets the
-WT3 software calibration offset for that axis to zero so calibration is not
+WT4 software calibration offset for that axis to zero so calibration is not
 applied twice.
 
 This does not write to the SVH3 quadrature pulse generator itself; that encoder
@@ -192,13 +207,13 @@ max_jog_seconds = 60.000
 ```
 
 It is a held-button watchdog. Change it in the GUI and press `Enter`/`Return`
-to save it. Existing `wt3.ini` files that still contain `5.000` will keep that
+to save it. Existing `wt4.ini` files that still contain `5.000` will keep that
 value until changed.
 
 ## Safety Limits
 
 Each antenna has independent limits. Press `Limits` in the GUI to edit and save
-these values without hand-editing `wt3.ini`:
+these values without hand-editing `wt4.ini`:
 
 ```ini
 az_min = 270.000
@@ -211,14 +226,14 @@ max_jog_seconds = 60.000
 poll_interval = 0.200
 ```
 
-The default is 60 seconds. If a button-release event is missed, WT3 stops the
+The default is 60 seconds. If a button-release event is missed, WT4 stops the
 axis when this time expires.
 
 The Limits dialog validates numeric ranges before saving. New limits take effect
-immediately for connected antennas and are written to `wt3.ini`.
+immediately for connected antennas and are written to `wt4.ini`.
 
 Elevation limits and elevation calibration values are constrained to 0..90
-degrees throughout WT3.
+degrees throughout WT4.
 
 Azimuth supports wrap-around. For example:
 
@@ -238,7 +253,7 @@ too close to the relevant limit. While a jog is active, it polls the encoder and
 stops that axis if a safety check fails.
 
 Automatic slews are also limit-aware. If the configured azimuth range wraps
-around 0 degrees, for example `az_min = 270` and `az_max = 265`, WT3 treats
+around 0 degrees, for example `az_min = 270` and `az_max = 265`, WT4 treats
 265..270 as a forbidden dead-zone and chooses the slew direction that remains
 inside the allowed arc, even when that is not the shortest geometric rotation.
 
@@ -250,7 +265,7 @@ protocol error is treated as a fault and movement stops.
 Press `Park` to slew each connected antenna to its configured park position,
 stop motion, and disconnect from the controllers after both antennas have
 parked successfully. If any antenna faults or `STOP ALL` is pressed during
-parking, WT3 stops movement and stays connected so the fault remains visible.
+parking, WT4 stops movement and stays connected so the fault remains visible.
 
 Park positions are edited in the `Park` tab inside `Limits`:
 
@@ -264,7 +279,7 @@ antenna's configured software limits.
 
 ## Target Tracking
 
-WT3 includes guarded target tracking:
+WT4 includes guarded target tracking:
 
 - `Track Sun` computes the current Sun AZ/EL and slews both connected antennas toward it.
 - `Track Moon` computes the current topocentric Moon AZ/EL and slews both connected antennas toward it.
@@ -284,7 +299,7 @@ WT3 includes guarded target tracking:
 
 All tracking uses the same calibrated positions, software limits, margins, jog
 speed, max-jog watchdog, encoder polling, and stop commands as manual movement.
-If the target is outside the configured safe limits, WT3 stops instead of
+If the target is outside the configured safe limits, WT4 stops instead of
 moving.
 
 Each antenna has separate AZ and EL tracking speeds:
@@ -313,7 +328,7 @@ it stops when it reaches that axis' signed stop tolerance. Positive stop
 tolerance stops before/at the target band; negative stop tolerance intentionally
 continues through the target and stops after passing it by that amount.
 
-When an axis is within its slow-degree value, WT3 changes that axis to its slow
+When an axis is within its slow-degree value, WT4 changes that axis to its slow
 speed until it reaches that axis' stop tolerance.
 
 Fine tracking moves that start already inside the slow-degree range begin at the
@@ -336,7 +351,7 @@ observer longitude.
 
 ## OLED Display
 
-WT3 writes the OLED over the decoded display command:
+WT4 writes the OLED over the decoded display command:
 
 ```text
 F0/F1 35 column row length ASCII_TEXT 00
@@ -355,6 +370,6 @@ checked without relying only on the Raspberry Pi screen.
 
 ## Not Yet Included
 
-WT3 does not yet include full astronomical schedule tracking or automatic scan
+WT4 does not yet include full astronomical schedule tracking or automatic scan
 patterns. Those should come after guarded target tracking is proven on both
 antennas.

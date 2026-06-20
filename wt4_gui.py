@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WT3 two-antenna safety/calibration GUI."""
+"""WT4 two-antenna safety/calibration GUI."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from datetime import datetime, timedelta, timezone
 from tkinter import messagebox, ttk
 from typing import Optional
 
-from wt3_astro import TargetPosition, local_sidereal_time, moon_equatorial, moon_position, source_position
-from wt3_config import (
+from wt4_astro import TargetPosition, local_sidereal_time, moon_equatorial, moon_position, source_position
+from wt4_config import (
     SiteConfig,
     SourceConfig,
     load_configs,
@@ -23,11 +23,11 @@ from wt3_config import (
     save_site_config,
     save_sources,
 )
-from wt3_driver import AntennaConfig, Axis, Direction, EncoderInfo, Position, SafeAntenna, shortest_angle_delta
-from wt3_solar import sun_equatorial, sun_position
+from wt4_driver import AntennaConfig, Axis, Direction, EncoderInfo, Position, SafeAntenna, shortest_angle_delta
+from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v3.0"
+APP_VERSION = "v4.0"
 
 
 def axis_label(axis: Axis) -> str:
@@ -35,7 +35,7 @@ def axis_label(axis: Axis) -> str:
 
 
 class LimitsDialog(tk.Toplevel):
-    def __init__(self, app: "WT3App") -> None:
+    def __init__(self, app: "WT4App") -> None:
         super().__init__(app)
         self.app = app
         self.title("Antenna Limits")
@@ -204,7 +204,7 @@ class LimitsDialog(tk.Toplevel):
 
 
 class ObserverDialog(tk.Toplevel):
-    def __init__(self, app: "WT3App") -> None:
+    def __init__(self, app: "WT4App") -> None:
         super().__init__(app)
         self.app = app
         self.title("Observer")
@@ -256,7 +256,7 @@ class ObserverDialog(tk.Toplevel):
 
 
 class SourcesDialog(tk.Toplevel):
-    def __init__(self, app: "WT3App") -> None:
+    def __init__(self, app: "WT4App") -> None:
         super().__init__(app)
         self.app = app
         self.title("Sources")
@@ -422,7 +422,7 @@ class SourcesDialog(tk.Toplevel):
 
 
 class CalibrationDialog(tk.Toplevel):
-    def __init__(self, app: "WT3App") -> None:
+    def __init__(self, app: "WT4App") -> None:
         super().__init__(app)
         self.app = app
         self.closed = False
@@ -641,7 +641,7 @@ class CalibrationDialog(tk.Toplevel):
 class PeakCalibrationDialog(tk.Toplevel):
     SOURCE_LABELS = ("Sun", "Moon", "Selected Source")
 
-    def __init__(self, app: "WT3App") -> None:
+    def __init__(self, app: "WT4App") -> None:
         super().__init__(app)
         self.app = app
         self.title("Peak Calibration")
@@ -1019,7 +1019,7 @@ class EncodersDialog(tk.Toplevel):
         "Mode",
     )
 
-    def __init__(self, app: "WT3App") -> None:
+    def __init__(self, app: "WT4App") -> None:
         super().__init__(app)
         self.app = app
         self.title("Encoders")
@@ -1116,7 +1116,7 @@ class EncodersDialog(tk.Toplevel):
         if not messagebox.askyesno(
             "Set Encoder Position",
             f"Set {name} {axis_label} Arduino position to {position:0.2f}?\n\n"
-            "This resets the WT3 software calibration offset for this axis to zero.",
+            "This resets the WT4 software calibration offset for this axis to zero.",
             parent=self,
         ):
             return
@@ -1143,7 +1143,7 @@ class EncodersDialog(tk.Toplevel):
 
 
 class TrackingDialog(tk.Toplevel):
-    def __init__(self, app: "WT3App") -> None:
+    def __init__(self, app: "WT4App") -> None:
         super().__init__(app)
         self.app = app
         self.title("Tracking")
@@ -1308,7 +1308,7 @@ class TrackingDialog(tk.Toplevel):
 
 
 class AntennaPanel(ttk.Frame):
-    def __init__(self, master: tk.Misc, app: "WT3App", name: str, config: Optional[AntennaConfig] = None) -> None:
+    def __init__(self, master: tk.Misc, app: "WT4App", name: str, config: Optional[AntennaConfig] = None) -> None:
         super().__init__(master, padding=8)
         self.app = app
         self.name = name
@@ -1516,10 +1516,10 @@ class AntennaPanel(ttk.Frame):
             self.app.run_worker(lambda: self.session.stop_all(), lambda _result: None, self.set_fault)
 
 
-class WT3App(tk.Tk):
+class WT4App(tk.Tk):
     def __init__(self, config_path: str) -> None:
         super().__init__()
-        self.title(f"WT3 Antenna Controller {APP_VERSION}")
+        self.title(f"WT4 Antenna Controller {APP_VERSION}")
         self.geometry("840x500")
         self.config_path = config_path
         self.configs = load_configs(config_path)
@@ -1602,7 +1602,7 @@ class WT3App(tk.Tk):
             self.panels[name] = panel
 
         if not self.configs:
-            self.status_var.set(f"No antennas found in {config_path}. Copy wt3.ini.example to wt3.ini.")
+            self.status_var.set(f"No antennas found in {config_path}. Copy wt4.ini.example to wt4.ini.")
 
         self.after(100, self.process_events)
         self.update_reference_positions()
@@ -2266,14 +2266,14 @@ class WT3App(tk.Tk):
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Launch WT3 two-antenna GUI.")
-    parser.add_argument("--config", default="wt3.ini", help="Config file. Default: wt3.ini")
+    parser = argparse.ArgumentParser(description="Launch WT4 two-antenna GUI.")
+    parser.add_argument("--config", default="wt4.ini", help="Config file. Default: wt4.ini")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    app = WT3App(args.config)
+    app = WT4App(args.config)
     try:
         app.mainloop()
     except KeyboardInterrupt:

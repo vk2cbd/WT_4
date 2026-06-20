@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Astronomical position helpers for WT3."""
+"""Astronomical position helpers for WT4."""
 
 from __future__ import annotations
 
