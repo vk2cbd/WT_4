@@ -1,6 +1,6 @@
 # WT4 Two-Antenna Safety Controller
 
-WT4 is a GUI controller for two WinTrak Arduino/SVH3 antenna drive units.
+WT4 is a GUI controller for Arduino/SVH3 antenna drive units.
 
 It keeps the decoded serial protocol from WT_1, but adds the pieces needed
 before automatic tracking is safe:
