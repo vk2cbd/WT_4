@@ -431,13 +431,15 @@ class CalibrationDialog(tk.Toplevel):
         self.transient(app)
         self.grab_set()
         self.entries: dict[str, dict[str, tk.StringVar]] = {}
+        self.tab_names: dict[str, tk.Widget] = {}
         self.protocol("WM_DELETE_WINDOW", self.close)
 
-        tabs = ttk.Notebook(self)
-        tabs.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
+        self.tabs = ttk.Notebook(self)
+        self.tabs.grid(row=0, column=0, padx=10, pady=10, sticky="nsew")
         for name, panel in app.panels.items():
-            frame = ttk.Frame(tabs, padding=10)
-            tabs.add(frame, text=name)
+            frame = ttk.Frame(self.tabs, padding=10)
+            self.tabs.add(frame, text=name)
+            self.tab_names[name] = frame
             az_var = tk.StringVar()
             el_var = tk.StringVar()
             raw_az_var = tk.StringVar(value="--")
@@ -501,6 +503,11 @@ class CalibrationDialog(tk.Toplevel):
                 lambda position, n=name: self.app.refresh_calibration_views(n, position),
                 lambda text, n=name: self.app.set_status(f"{n}: {text}"),
             )
+
+    def select_antenna(self, name: str) -> None:
+        frame = self.tab_names.get(name)
+        if frame:
+            self.tabs.select(frame)
 
     def refresh_offsets(self, name: Optional[str] = None, position: Optional[Position] = None) -> None:
         if self.closed:
@@ -679,7 +686,7 @@ class PeakCalibrationDialog(tk.Toplevel):
         )
         antenna_combo.grid(row=1, column=1, sticky="w", pady=2)
         source_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_display(live=True))
-        antenna_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_display(live=True))
+        antenna_combo.bind("<<ComboboxSelected>>", lambda _event: self.antenna_changed())
 
         ttk.Separator(body, orient="horizontal").grid(row=2, column=0, columnspan=4, sticky="ew", pady=8)
         ttk.Label(body, textvariable=self.target_var).grid(row=3, column=0, columnspan=4, sticky="w", pady=2)
@@ -753,6 +760,10 @@ class PeakCalibrationDialog(tk.Toplevel):
     def current_peak_target(self) -> TargetPosition:
         return self.app.target_for_kind(self.source_kind())
 
+    def antenna_changed(self) -> None:
+        self.app.select_calibration_antenna(self.antenna_var.get())
+        self.refresh_display(live=True)
+
     def refresh_display(self, live: bool = False) -> None:
         if self.closed:
             return
@@ -795,6 +806,7 @@ class PeakCalibrationDialog(tk.Toplevel):
         if panel:
             panel.update_position(position)
         self.app.refresh_calibration_views(name, position)
+        self.status_var.set("Ready.")
 
     def refresh_offsets(self, name: Optional[str] = None, position: Optional[Position] = None) -> None:
         if self.closed:
@@ -2067,12 +2079,21 @@ class WT3App(tk.Tk):
         if not self.configs:
             self.status_var.set("No antenna configs loaded.")
             return
+        selected_name = (
+            self.peak_calibration_dialog.antenna_var.get()
+            if self.peak_calibration_dialog and self.peak_calibration_dialog.winfo_exists()
+            else ""
+        )
         if self.calibration_dialog and self.calibration_dialog.winfo_exists():
             self.calibration_dialog.refresh_offsets()
             self.calibration_dialog.refresh_live_positions()
+            if selected_name:
+                self.calibration_dialog.select_antenna(selected_name)
             self.calibration_dialog.lift()
             return
         self.calibration_dialog = CalibrationDialog(self)
+        if selected_name:
+            self.calibration_dialog.select_antenna(selected_name)
 
     def open_peak_calibration(self) -> None:
         if not self.configs:
@@ -2089,6 +2110,10 @@ class WT3App(tk.Tk):
             self.calibration_dialog.refresh_offsets(name, position)
         if self.peak_calibration_dialog and self.peak_calibration_dialog.winfo_exists():
             self.peak_calibration_dialog.refresh_offsets(name, position)
+
+    def select_calibration_antenna(self, name: str) -> None:
+        if self.calibration_dialog and self.calibration_dialog.winfo_exists():
+            self.calibration_dialog.select_antenna(name)
 
     def open_encoders(self) -> None:
         if not self.configs:
