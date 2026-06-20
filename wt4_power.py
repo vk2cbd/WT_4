@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 
+_UNSIGNED_IQ_POWER_TABLE = tuple(((value - 127.5) / 127.5) ** 2 for value in range(256))
+
+
 @dataclass(frozen=True)
 class PowerMeterConfig:
     center_frequency_hz: int = 1_200_000_000
@@ -20,6 +23,7 @@ class PowerMeterConfig:
     device_index: int = 0
     gain_db: Optional[float] = None
     smoothing_samples: int = 3
+    samples_per_read: Optional[int] = 32_768
 
     def validate(self) -> None:
         if self.center_frequency_hz <= 0:
@@ -32,9 +36,13 @@ class PowerMeterConfig:
             raise ValueError("update rate must be 1..50 Hz")
         if self.smoothing_samples < 1:
             raise ValueError("smoothing samples must be at least 1")
+        if self.samples_per_read is not None and self.samples_per_read < 256:
+            raise ValueError("samples per read must be at least 256")
 
     @property
     def samples_per_update(self) -> int:
+        if self.samples_per_read is not None:
+            return self.samples_per_read
         return max(1, int(round(self.sample_rate_hz / self.update_rate_hz)))
 
 
@@ -68,10 +76,9 @@ def power_dbfs_from_unsigned_iq(data: bytes) -> PowerReading:
     total = 0.0
     count = len(data) // 2
     limit = count * 2
+    table = _UNSIGNED_IQ_POWER_TABLE
     for index in range(0, limit, 2):
-        i_val = (data[index] - 127.5) / 127.5
-        q_val = (data[index + 1] - 127.5) / 127.5
-        total += i_val * i_val + q_val * q_val
+        total += table[data[index]] + table[data[index + 1]]
     mean_power = total / count
     return PowerReading(datetime.now(timezone.utc), 10.0 * math.log10(max(mean_power, 1.0e-20)), count)
 

@@ -19,6 +19,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=int, default=0, help="RTL-SDR device index.")
     parser.add_argument("--gain", type=float, default=None, help="Manual tuner gain in dB. Omit for auto gain.")
     parser.add_argument("--count", type=int, default=0, help="Number of readings to print. 0 means continuous.")
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=32_768,
+        help="IQ samples per power reading. Use 0 for sample_rate/update_rate.",
+    )
     return parser.parse_args()
 
 
@@ -31,6 +37,7 @@ def main() -> int:
         update_rate_hz=args.update_rate,
         device_index=args.device,
         gain_db=args.gain,
+        samples_per_read=None if args.samples == 0 else args.samples,
     )
     config.validate()
     print(

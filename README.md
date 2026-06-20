@@ -96,16 +96,18 @@ SDR code directly into the antenna GUI.
 The first hardware test is command-line only:
 
 ```bash
-python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7
+python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7 --samples 32768
 ```
 
 Use `--count` for a short test:
 
 ```bash
-python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7 --count 20
+python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7 --samples 32768 --count 20
 ```
 
 If your tuner works better in automatic gain mode, omit `--gain`.
+If the Raspberry Pi still cannot reach 10 Hz, try `--samples 16384`. Larger
+values give more averaging; smaller values give faster response.
 
 The power-meter module currently provides:
 
