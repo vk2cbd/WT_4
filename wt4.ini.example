@@ -12,6 +12,15 @@ el_slow_speed = 20
 az_slow_threshold_degrees = 3.0
 el_slow_threshold_degrees = 3.0
 
+[power]
+center_frequency_hz = 1200000000
+sample_rate_hz = 1024000
+gain_db = 29.7
+samples_per_read = auto
+update_rate_hz = 10.0
+smoothing_samples = 3
+warmup_seconds = 30.0
+
 [antenna:East]
 port = /dev/ttyUSB0
 baud = 9600

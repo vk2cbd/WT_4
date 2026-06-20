@@ -35,6 +35,17 @@ class SiteConfig:
     el_slow_threshold_degrees: float = 3.0
 
 
+@dataclass
+class PowerConfig:
+    center_frequency_hz: int = 1_200_000_000
+    sample_rate_hz: int = 1_024_000
+    gain_db: str = "29.7"
+    samples_per_read: str = "auto"
+    update_rate_hz: float = 10.0
+    smoothing_samples: int = 3
+    warmup_seconds: float = 30.0
+
+
 def load_site_config(path: Union[str, Path]) -> SiteConfig:
     path = Path(path)
     parser = configparser.ConfigParser()
@@ -63,6 +74,40 @@ def load_site_config(path: Union[str, Path]) -> SiteConfig:
         az_slow_threshold_degrees=parser.getfloat("site", "az_slow_threshold_degrees", fallback=old_slow_threshold),
         el_slow_threshold_degrees=parser.getfloat("site", "el_slow_threshold_degrees", fallback=old_slow_threshold),
     )
+
+
+def load_power_config(path: Union[str, Path]) -> PowerConfig:
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    if path.exists():
+        parser.read(path)
+    return PowerConfig(
+        center_frequency_hz=parser.getint("power", "center_frequency_hz", fallback=1_200_000_000),
+        sample_rate_hz=parser.getint("power", "sample_rate_hz", fallback=1_024_000),
+        gain_db=parser.get("power", "gain_db", fallback="29.7").strip() or "auto",
+        samples_per_read=parser.get("power", "samples_per_read", fallback="auto").strip() or "auto",
+        update_rate_hz=parser.getfloat("power", "update_rate_hz", fallback=10.0),
+        smoothing_samples=parser.getint("power", "smoothing_samples", fallback=3),
+        warmup_seconds=parser.getfloat("power", "warmup_seconds", fallback=30.0),
+    )
+
+
+def save_power_config(path: Union[str, Path], power: PowerConfig) -> None:
+    path = Path(path)
+    parser = configparser.ConfigParser()
+    if path.exists():
+        parser.read(path)
+    parser["power"] = {
+        "center_frequency_hz": str(int(power.center_frequency_hz)),
+        "sample_rate_hz": str(int(power.sample_rate_hz)),
+        "gain_db": power.gain_db,
+        "samples_per_read": power.samples_per_read,
+        "update_rate_hz": f"{power.update_rate_hz:.1f}",
+        "smoothing_samples": str(max(1, int(power.smoothing_samples))),
+        "warmup_seconds": f"{power.warmup_seconds:.1f}",
+    }
+    with path.open("w", encoding="utf-8") as handle:
+        parser.write(handle)
 
 
 def save_site_config(path: Union[str, Path], site: SiteConfig) -> None:

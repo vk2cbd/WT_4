@@ -14,12 +14,15 @@ from typing import Optional
 
 from wt4_astro import TargetPosition, local_sidereal_time, moon_equatorial, moon_position, source_position
 from wt4_config import (
+    PowerConfig,
     SiteConfig,
     SourceConfig,
     load_configs,
+    load_power_config,
     load_site_config,
     load_sources,
     save_configs,
+    save_power_config,
     save_site_config,
     save_sources,
 )
@@ -1526,19 +1529,23 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.meter: Optional[RtlPowerMeter] = None
         self.power_values: list[float] = []
         self.last_reading_time = 0.0
+        self.power_started_at = 0.0
+        self.warmup_seconds = 0.0
 
-        self.freq_var = tk.StringVar(value="1200000000")
-        self.rate_var = tk.StringVar(value="1024000")
-        self.gain_var = tk.StringVar(value="29.7")
-        self.samples_var = tk.StringVar(value="auto")
-        self.update_var = tk.StringVar(value="10.0")
-        self.smooth_var = tk.StringVar(value="3")
+        power = app.power_config
+        self.freq_var = tk.StringVar(value=str(power.center_frequency_hz))
+        self.rate_var = tk.StringVar(value=str(power.sample_rate_hz))
+        self.gain_var = tk.StringVar(value=power.gain_db)
+        self.samples_var = tk.StringVar(value=power.samples_per_read)
+        self.update_var = tk.StringVar(value=f"{power.update_rate_hz:0.1f}")
+        self.smooth_var = tk.StringVar(value=str(power.smoothing_samples))
+        self.warmup_var = tk.StringVar(value=f"{power.warmup_seconds:0.0f}")
         self.power_var = tk.StringVar(value="--.- dBFS")
         self.status_var = tk.StringVar(value="Stopped")
 
         fields = ttk.Frame(self)
         fields.grid(row=0, column=0, sticky="ew")
-        for column in range(12):
+        for column in range(14):
             fields.columnconfigure(column, weight=1 if column % 2 else 0)
         self._entry(fields, "Freq", self.freq_var, 0, width=11)
         self._entry(fields, "Sample sps", self.rate_var, 2, width=8)
@@ -1546,6 +1553,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self._entry(fields, "Samples", self.samples_var, 6, width=7)
         self._entry(fields, "GUI Hz", self.update_var, 8, width=5)
         self._entry(fields, "Avg", self.smooth_var, 10, width=4)
+        self._entry(fields, "Warm s", self.warmup_var, 12, width=5)
 
         controls = ttk.Frame(self)
         controls.grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -1558,23 +1566,41 @@ class PowerMeterPanel(ttk.LabelFrame):
         ttk.Label(parent, text=label).grid(row=0, column=column, sticky="w", padx=(0, 2))
         ttk.Entry(parent, textvariable=variable, width=width).grid(row=0, column=column + 1, sticky="w", padx=(0, 8))
 
-    def config_from_fields(self) -> PowerMeterConfig:
+    def power_config_from_fields(self) -> PowerConfig:
+        return PowerConfig(
+            center_frequency_hz=int(self.freq_var.get()),
+            sample_rate_hz=int(self.rate_var.get()),
+            gain_db=self.gain_var.get().strip() or "auto",
+            samples_per_read=self.samples_var.get().strip() or "auto",
+            update_rate_hz=float(self.update_var.get()),
+            smoothing_samples=max(1, int(self.smooth_var.get())),
+            warmup_seconds=max(0.0, float(self.warmup_var.get())),
+        )
+
+    def meter_config_from_fields(self) -> PowerMeterConfig:
+        power = self.power_config_from_fields()
         gain_text = self.gain_var.get().strip().lower()
         gain = None if gain_text in ("", "auto") else float(gain_text)
         samples_text = self.samples_var.get().strip().lower()
         samples = None if samples_text in ("", "auto", "0") else int(samples_text)
-        sample_rate = int(self.rate_var.get())
         config = PowerMeterConfig(
-            center_frequency_hz=int(self.freq_var.get()),
-            sample_rate_hz=sample_rate,
-            measurement_bandwidth_hz=sample_rate,
-            update_rate_hz=float(self.update_var.get()),
+            center_frequency_hz=power.center_frequency_hz,
+            sample_rate_hz=power.sample_rate_hz,
+            measurement_bandwidth_hz=power.sample_rate_hz,
+            update_rate_hz=power.update_rate_hz,
             gain_db=gain,
-            smoothing_samples=max(1, int(self.smooth_var.get())),
+            smoothing_samples=power.smoothing_samples,
             samples_per_read=samples,
         )
         config.validate()
         return config
+
+    def save_settings(self) -> None:
+        try:
+            self.app.power_config = self.power_config_from_fields()
+        except Exception:
+            return
+        save_power_config(self.app.config_path, self.app.power_config)
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
@@ -1584,12 +1610,17 @@ class PowerMeterPanel(ttk.LabelFrame):
                 self.status_var.set("Running but no readings; press Stop Power and wait.")
             return
         try:
-            config = self.config_from_fields()
+            power_config = self.power_config_from_fields()
+            config = self.meter_config_from_fields()
         except Exception as exc:
             self.status_var.set(str(exc))
             return
+        self.app.power_config = power_config
+        save_power_config(self.app.config_path, self.app.power_config)
         self.power_values.clear()
         self.last_reading_time = 0.0
+        self.power_started_at = time.monotonic()
+        self.warmup_seconds = power_config.warmup_seconds
         self.power_var.set("--.- dBFS")
         self.stop_event.clear()
         self.status_var.set(f"Starting... {config.samples_per_update} samples/read")
@@ -1612,7 +1643,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         try:
             with RtlPowerMeter(config) as meter:
                 self.meter = meter
-                self.app.events.put(("ok", self.set_status, "Running"))
+                self.app.events.put(("ok", self.refresh_warmup_status, None))
                 while not self.stop_event.is_set():
                     reading = meter.read_power()
                     self.app.events.put(("ok", self.update_power, reading))
@@ -1633,6 +1664,16 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.power_values = self.power_values[-smoothing:]
         average = sum(self.power_values) / len(self.power_values)
         self.power_var.set(f"{average:0.1f} dBFS")
+        self.refresh_warmup_status(None)
+
+    def refresh_warmup_status(self, _unused: object) -> None:
+        if self.stop_event.is_set() or not self.power_started_at:
+            return
+        remaining = self.warmup_seconds - (time.monotonic() - self.power_started_at)
+        if remaining > 0:
+            self.status_var.set(f"Warming {remaining:0.0f}s")
+        else:
+            self.status_var.set("Ready")
 
     def set_status(self, text: str) -> None:
         self.status_var.set(text)
@@ -1655,6 +1696,7 @@ class WT4App(tk.Tk):
         self.configs = load_configs(config_path)
         self.site = load_site_config(config_path)
         self.sources = load_sources(config_path)
+        self.power_config = load_power_config(config_path)
         self.sessions: dict[str, SafeAntenna] = {}
         self.events: queue.Queue[tuple[str, object, object]] = queue.Queue()
         self.tracking_stop_event = threading.Event()
@@ -2391,6 +2433,7 @@ class WT4App(tk.Tk):
 
     def on_close(self) -> None:
         try:
+            self.power_panel.save_settings()
             self.power_panel.stop()
             self.stop_all()
             for session in self.sessions.values():
