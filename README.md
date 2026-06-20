@@ -23,7 +23,7 @@ On the Raspberry Pi:
 
 ```bash
 sudo apt update
-sudo apt install -y python3-serial python3-tk
+sudo apt install -y python3-serial python3-tk rtl-sdr librtlsdr0
 ```
 
 Copy and edit the config:
@@ -88,19 +88,34 @@ Or specify another config:
 python3 wt4_gui.py --config wt4.ini
 ```
 
-## RTL Power Meter Status
+## RTL Power Meter
 
 WT4 starts the RTL power-meter work as a separate subsystem rather than adding
-SDR code directly into the antenna GUI. The first boundary is `wt4_power.py`,
-which defines:
+SDR code directly into the antenna GUI.
+
+The first hardware test is command-line only:
+
+```bash
+python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7
+```
+
+Use `--count` for a short test:
+
+```bash
+python3 wt4_power_cli.py --freq 1200000000 --rate 1024000 --gain 29.7 --count 20
+```
+
+If your tuner works better in automatic gain mode, omit `--gain`.
+
+The power-meter module currently provides:
 
 - power-meter configuration defaults
 - a 10 Hz update model
 - a 500 kHz measurement-bandwidth default
 - a relative dBFS power calculation helper
+- synchronous RTL-SDR sample capture using `librtlsdr`
 
-The first hardware-backed version will add RTL-SDR device I/O behind this
-module, then feed only compact power readings into the Tk GUI.
+The GUI integration will come after the command-line power stream is stable.
 
 ## First Use
 
