@@ -462,6 +462,16 @@ class SafeAntenna:
             self.config.calibration.el_offset = actual_elevation - raw_el
             return self.read_position_locked()
 
+    def calibrate_axis(self, axis: Axis, actual_degrees: float) -> Position:
+        with self.lock:
+            if axis == Axis.AZIMUTH:
+                raw_az = self.controller.read_azimuth()
+                self.config.calibration.az_offset = shortest_angle_delta(raw_az, actual_degrees)
+            else:
+                raw_el = self.controller.read_elevation()
+                self.config.calibration.el_offset = actual_degrees - raw_el
+            return self.read_position_locked()
+
     def scan_encoders(self) -> dict[Axis, EncoderInfo]:
         with self.lock:
             return {
@@ -622,6 +632,77 @@ class SafeAntenna:
         finally:
             with self.lock:
                 self.controller.stop_all()
+
+    def guarded_slew_axis_to(
+        self,
+        axis: Axis,
+        target_degrees: float,
+        speed: int,
+        stop_event: threading.Event,
+        start_tolerance: float = 0.5,
+        stop_tolerance: Optional[float] = None,
+        slow_speed: Optional[int] = None,
+        slow_threshold: float = 3.0,
+        update_callback: Optional[Callable[[Position], None]] = None,
+    ) -> Position:
+        start_tolerance = max(0.01, abs(float(start_tolerance)))
+        stop_tolerance = _clamp_signed_stop_tolerance(stop_tolerance, start_tolerance)
+        slow_threshold = max(start_tolerance, float(slow_threshold))
+        fast_speed = clamp_speed(speed)
+        slow_speed = clamp_speed(fast_speed if slow_speed is None else slow_speed)
+        if axis == Axis.AZIMUTH:
+            target_degrees = normalize_degrees(target_degrees)
+
+        pos = self.read_position()
+        if axis == Axis.AZIMUTH:
+            self.config.limits.assert_position_allowed(target_degrees, pos.elevation)
+            error = self.config.limits.azimuth_delta_to_target(pos.azimuth, target_degrees)
+            direction = Direction.AZ_CW if error > 0.0 else Direction.AZ_CCW
+        else:
+            self.config.limits.assert_position_allowed(pos.azimuth, target_degrees)
+            error = target_degrees - pos.elevation
+            direction = Direction.EL_UP if error > 0.0 else Direction.EL_DOWN
+        if abs(error) <= start_tolerance:
+            return pos
+
+        direction_sign = 1.0 if error > 0.0 else -1.0
+        using_slow = abs(error) <= slow_threshold
+        deadline = time.monotonic() + self.config.limits.max_jog_seconds
+        try:
+            with self.lock:
+                pos = self.read_position_locked()
+                self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                self._start_direction(direction, slow_speed if using_slow else fast_speed)
+
+            while not stop_event.is_set() and time.monotonic() < deadline:
+                time.sleep(self.config.limits.poll_interval)
+                with self.lock:
+                    pos = self.read_position_locked()
+                    self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                    error = (
+                        self.config.limits.azimuth_delta_to_target(pos.azimuth, target_degrees)
+                        if axis == Axis.AZIMUTH
+                        else target_degrees - pos.elevation
+                    )
+                    if _reached_stop_tolerance(error, stop_tolerance, direction_sign):
+                        self._stop_axis(axis)
+                        if update_callback:
+                            update_callback(pos)
+                        return pos
+                    if not using_slow and abs(error) <= slow_threshold:
+                        self._set_axis_direction_speed(axis, direction, slow_speed)
+                        using_slow = True
+                if update_callback:
+                    update_callback(pos)
+            if not stop_event.is_set():
+                raise SafetyError(f"Axis slew timed out after {self.config.limits.max_jog_seconds:0.1f}s")
+            return self.read_position()
+        except Exception as exc:
+            self.fault = str(exc)
+            raise
+        finally:
+            with self.lock:
+                self._stop_axis(axis)
 
     def stop_all(self) -> None:
         with self.lock:

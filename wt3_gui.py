@@ -30,6 +30,10 @@ from wt3_solar import sun_position
 APP_VERSION = "v3.0"
 
 
+def axis_label(axis: Axis) -> str:
+    return "AZ" if axis == Axis.AZIMUTH else "EL"
+
+
 class LimitsDialog(tk.Toplevel):
     def __init__(self, app: "WT3App") -> None:
         super().__init__(app)
@@ -584,6 +588,301 @@ class CalibrationDialog(tk.Toplevel):
             values["raw_el"].set(f"{position.raw_elevation:0.2f}")
             panel.clear_message()
             panel.update_position(position)
+
+
+class PeakCalibrationDialog(tk.Toplevel):
+    SOURCE_LABELS = ("Sun", "Moon", "Selected Source")
+
+    def __init__(self, app: "WT3App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("Peak Calibration")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        self.track_stop_event = threading.Event()
+        self.jog_stop_event = threading.Event()
+        self.tracking_axis: Optional[Axis] = None
+        self.tracking_session: Optional[SafeAntenna] = None
+        self.jog_thread_active = False
+        self.closed = False
+
+        connected_names = list(app.sessions) or list(app.configs)
+        self.antenna_var = tk.StringVar(value=connected_names[0] if connected_names else "")
+        self.source_var = tk.StringVar(value="Sun")
+        self.status_var = tk.StringVar(value="Select source and antenna.")
+        self.target_var = tk.StringVar(value="Source AZ -- EL --")
+        self.position_var = tk.StringVar(value="Antenna AZ -- EL --")
+        self.raw_var = tk.StringVar(value="Raw AZ -- EL --")
+        self.offset_var = tk.StringVar(value="Offsets AZ -- EL --")
+
+        body = ttk.Frame(self, padding=10)
+        body.grid(row=0, column=0, sticky="nsew")
+
+        ttk.Label(body, text="Source").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Combobox(
+            body,
+            textvariable=self.source_var,
+            values=self.SOURCE_LABELS,
+            width=18,
+            state="readonly",
+        ).grid(row=0, column=1, sticky="w", pady=2)
+        ttk.Label(body, text="Antenna").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Combobox(
+            body,
+            textvariable=self.antenna_var,
+            values=connected_names,
+            width=18,
+            state="readonly",
+        ).grid(row=1, column=1, sticky="w", pady=2)
+
+        ttk.Separator(body, orient="horizontal").grid(row=2, column=0, columnspan=4, sticky="ew", pady=8)
+        ttk.Label(body, textvariable=self.target_var).grid(row=3, column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(body, textvariable=self.position_var).grid(row=4, column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(body, textvariable=self.raw_var).grid(row=5, column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(body, textvariable=self.offset_var).grid(row=6, column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(body, textvariable=self.status_var, foreground="red").grid(row=7, column=0, columnspan=4, sticky="w", pady=(4, 0))
+
+        tracking = ttk.LabelFrame(body, text="Axis Tracking")
+        tracking.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        ttk.Button(tracking, text="Track AZ Only", command=lambda: self.start_axis_tracking(Axis.AZIMUTH)).grid(
+            row=0, column=0, sticky="ew", padx=2, pady=2
+        )
+        ttk.Button(tracking, text="Track EL Only", command=lambda: self.start_axis_tracking(Axis.ELEVATION)).grid(
+            row=0, column=1, sticky="ew", padx=2, pady=2
+        )
+        ttk.Button(tracking, text="Stop Tracking", command=self.stop_axis_tracking).grid(row=0, column=2, sticky="ew", padx=2, pady=2)
+
+        jog = ttk.LabelFrame(body, text="Manual Peak Jog")
+        jog.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        for col in range(3):
+            jog.columnconfigure(col, weight=1)
+        self._hold_button(jog, "EL+", Direction.EL_UP).grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self._hold_button(jog, "AZ-", Direction.AZ_CCW).grid(row=1, column=0, sticky="ew", padx=2, pady=2)
+        ttk.Button(jog, text="STOP", command=self.stop_jog).grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        self._hold_button(jog, "AZ+", Direction.AZ_CW).grid(row=1, column=2, sticky="ew", padx=2, pady=2)
+        self._hold_button(jog, "EL-", Direction.EL_DOWN).grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+
+        locks = ttk.LabelFrame(body, text="Calibration Lock")
+        locks.grid(row=10, column=0, columnspan=4, sticky="ew", pady=(10, 0))
+        ttk.Button(locks, text="LOCK AZ CAL", command=lambda: self.lock_axis_calibration(Axis.AZIMUTH)).grid(
+            row=0, column=0, sticky="ew", padx=2, pady=2
+        )
+        ttk.Button(locks, text="LOCK EL CAL", command=lambda: self.lock_axis_calibration(Axis.ELEVATION)).grid(
+            row=0, column=1, sticky="ew", padx=2, pady=2
+        )
+
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.grid(row=1, column=0, sticky="ew")
+        buttons.columnconfigure(0, weight=1)
+        ttk.Button(buttons, text="Close", command=self.close).grid(row=0, column=1)
+        self.protocol("WM_DELETE_WINDOW", self.close)
+        self.refresh_display()
+
+    def _hold_button(self, master: tk.Misc, text: str, direction: Direction) -> ttk.Button:
+        button = ttk.Button(master, text=text)
+        button.bind("<ButtonPress-1>", lambda _event: self.start_jog(direction))
+        button.bind("<ButtonRelease-1>", lambda _event: self.stop_jog())
+        button.bind("<Leave>", lambda _event: self.stop_jog())
+        return button
+
+    def source_kind(self) -> str:
+        label = self.source_var.get()
+        if label == "Sun":
+            return "sun"
+        if label == "Moon":
+            return "moon"
+        return "source"
+
+    def selected_session(self) -> Optional[SafeAntenna]:
+        return self.app.sessions.get(self.antenna_var.get())
+
+    def selected_panel(self) -> Optional["AntennaPanel"]:
+        return self.app.panels.get(self.antenna_var.get())
+
+    def current_peak_target(self) -> TargetPosition:
+        return self.app.target_for_kind(self.source_kind())
+
+    def refresh_display(self) -> None:
+        if self.closed:
+            return
+        try:
+            target = self.current_peak_target()
+            self.target_var.set(f"{target.name} AZ {target.azimuth:0.2f} EL {target.elevation:0.2f}")
+        except Exception as exc:
+            self.target_var.set(f"Source unavailable: {exc}")
+        session = self.selected_session()
+        config = self.app.configs.get(self.antenna_var.get())
+        position = session.last_position if session else None
+        if position:
+            self.position_var.set(f"Antenna AZ {position.azimuth:0.2f} EL {position.elevation:0.2f}")
+            self.raw_var.set(f"Raw AZ {position.raw_azimuth:0.2f} EL {position.raw_elevation:0.2f}")
+        else:
+            self.position_var.set("Antenna AZ -- EL --")
+            self.raw_var.set("Raw AZ -- EL --")
+        if config:
+            self.offset_var.set(
+                f"Offsets AZ {config.calibration.az_offset:+0.2f} EL {config.calibration.el_offset:+0.2f}"
+            )
+        self.after(1000, self.refresh_display)
+
+    def start_axis_tracking(self, axis: Axis) -> None:
+        session = self.selected_session()
+        if session is None:
+            self.status_var.set("Connect the selected antenna first.")
+            return
+        try:
+            self.app.validate_site(self.app.site)
+            self.current_peak_target()
+        except Exception as exc:
+            self.status_var.set(str(exc))
+            return
+        self.app.tracking_stop_event.set()
+        self.app.tracking_active = False
+        if self.tracking_axis is not None:
+            self.status_var.set("Stop current Peak Cal tracking before starting another axis.")
+            return
+        self.track_stop_event = threading.Event()
+        self.tracking_axis = axis
+        self.tracking_session = session
+        threading.Thread(target=self.axis_tracking_loop, args=(session, axis, self.track_stop_event), daemon=True).start()
+        self.status_var.set(f"Tracking {axis_label(axis)} only. Manually peak the other axis.")
+
+    def axis_tracking_loop(self, session: SafeAntenna, axis: Axis, stop_event: threading.Event) -> None:
+        panel = self.selected_panel()
+        try:
+            while not stop_event.is_set():
+                target = self.current_peak_target()
+                target_value = target.azimuth if axis == Axis.AZIMUTH else target.elevation
+                self.app.events.put(("ok", self.app.apply_target_position, target))
+                if panel:
+                    self.app.events.put(("ok", panel.set_tracking_status, f"CAL {axis_label(axis)}"))
+
+                def progress(position: Position) -> None:
+                    if panel:
+                        self.app.events.put(("position", panel.update_position, position))
+                    session.update_oled_position(target.azimuth, target.elevation, f"CAL {axis_label(axis)}")
+
+                position = session.guarded_slew_axis_to(
+                    axis,
+                    target_value,
+                    session.config.az_track_speed if axis == Axis.AZIMUTH else session.config.el_track_speed,
+                    stop_event,
+                    self.app.az_tracking_start_tolerance() if axis == Axis.AZIMUTH else self.app.el_tracking_start_tolerance(),
+                    self.app.az_tracking_stop_tolerance() if axis == Axis.AZIMUTH else self.app.el_tracking_stop_tolerance(),
+                    self.app.site.az_slow_speed if axis == Axis.AZIMUTH else self.app.site.el_slow_speed,
+                    self.app.site.az_slow_threshold_degrees if axis == Axis.AZIMUTH else self.app.site.el_slow_threshold_degrees,
+                    progress,
+                )
+                if panel:
+                    self.app.events.put(("position", panel.update_position, position))
+                session.update_oled(target.name[:8].upper(), target.azimuth, target.elevation, f"CAL {axis_label(axis)}")
+                wait_until = time.monotonic() + max(0.1, self.app.site.track_interval_seconds)
+                while not stop_event.is_set() and time.monotonic() < wait_until:
+                    time.sleep(0.05)
+        except Exception as exc:
+            self.app.events.put(("error", self.show_status, str(exc)))
+        finally:
+            if panel:
+                self.app.events.put(("ok", panel.set_tracking_status, "STOPPED"))
+
+    def stop_axis_tracking(self) -> None:
+        self.track_stop_event.set()
+        session = self.tracking_session
+        if session and self.tracking_axis is not None:
+            self.app.run_worker(lambda s=session: (s.stop_all(), s.update_oled_activity("STOPPED")), lambda _result: None, self.show_status)
+        self.tracking_axis = None
+        self.tracking_session = None
+        self.status_var.set("Peak calibration tracking stopped.")
+
+    def start_jog(self, direction: Direction) -> None:
+        session = self.selected_session()
+        if session is None or self.jog_thread_active:
+            return
+        jog_axis = Axis.AZIMUTH if direction in (Direction.AZ_CW, Direction.AZ_CCW) else Axis.ELEVATION
+        if self.tracking_axis == jog_axis:
+            self.status_var.set(f"Stop {axis_label(jog_axis)} tracking before jogging that axis.")
+            return
+        self.jog_stop_event.clear()
+        self.jog_thread_active = True
+        panel = self.selected_panel()
+        speed = panel.speed_value if panel else session.config.gui_speed
+
+        def progress(position: Position) -> None:
+            if panel:
+                self.app.events.put(("position", panel.update_position, position))
+            session.update_oled_position(activity=f"PEAK {axis_label(jog_axis)}")
+
+        def work() -> Position:
+            session.update_oled("PEAK", activity=f"PEAK {axis_label(jog_axis)}")
+            session.guarded_jog(direction, speed, None, self.jog_stop_event, progress)
+            position = session.read_position()
+            session.update_oled_activity("STOPPED")
+            return position
+
+        self.app.run_worker(work, self.finish_jog, self.finish_jog_fault)
+
+    def stop_jog(self) -> None:
+        self.jog_stop_event.set()
+
+    def finish_jog(self, position: Position) -> None:
+        self.jog_thread_active = False
+        panel = self.selected_panel()
+        if panel:
+            panel.update_position(position)
+        self.status_var.set("Jog stopped.")
+
+    def finish_jog_fault(self, text: str) -> None:
+        self.jog_thread_active = False
+        self.status_var.set(text)
+
+    def lock_axis_calibration(self, axis: Axis) -> None:
+        session = self.selected_session()
+        if session is None:
+            self.status_var.set("Connect the selected antenna first.")
+            return
+        if self.tracking_axis == axis:
+            self.status_var.set(f"Track the other axis before locking {axis_label(axis)} calibration.")
+            return
+
+        def work() -> tuple[Position, TargetPosition, float, float]:
+            target = self.current_peak_target()
+            actual = target.azimuth if axis == Axis.AZIMUTH else target.elevation
+            old_offset = (
+                session.config.calibration.az_offset if axis == Axis.AZIMUTH else session.config.calibration.el_offset
+            )
+            position = session.calibrate_axis(axis, actual)
+            self.app.save_config("Peak calibration saved.")
+            session.update_oled(target.name[:8].upper(), target.azimuth, target.elevation, f"CAL {axis_label(axis)}")
+            new_offset = (
+                session.config.calibration.az_offset if axis == Axis.AZIMUTH else session.config.calibration.el_offset
+            )
+            return position, target, old_offset, new_offset
+
+        self.app.run_worker(
+            work,
+            lambda result, a=axis: self.finish_axis_lock(a, result),
+            self.show_status,
+        )
+
+    def finish_axis_lock(self, axis: Axis, result: tuple[Position, TargetPosition, float, float]) -> None:
+        position, target, old_offset, new_offset = result
+        panel = self.selected_panel()
+        if panel:
+            panel.update_position(position)
+            panel.clear_message()
+        self.status_var.set(
+            f"Locked {axis_label(axis)} to {target.name}: offset {old_offset:+0.2f} -> {new_offset:+0.2f}."
+        )
+
+    def show_status(self, text: str) -> None:
+        self.status_var.set(text)
+
+    def close(self) -> None:
+        self.closed = True
+        self.track_stop_event.set()
+        self.jog_stop_event.set()
+        self.destroy()
 
 
 class EncodersDialog(tk.Toplevel):
@@ -1143,6 +1442,7 @@ class WT3App(tk.Tk):
         ttk.Button(top_row_1, text="Tracking", command=self.open_tracking).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Sources", command=self.open_sources).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Calibration", command=self.open_calibration).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_1, text="Peak Cal", command=self.open_peak_calibration).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Encoders", command=self.open_encoders).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="STOP ALL", command=self.stop_all).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_2, text="Track Sun", command=lambda: self.start_tracking("sun")).pack(side="left")
@@ -1647,6 +1947,12 @@ class WT3App(tk.Tk):
             self.status_var.set("No antenna configs loaded.")
             return
         CalibrationDialog(self)
+
+    def open_peak_calibration(self) -> None:
+        if not self.configs:
+            self.status_var.set("No antenna configs loaded.")
+            return
+        PeakCalibrationDialog(self)
 
     def open_encoders(self) -> None:
         if not self.configs:

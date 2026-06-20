@@ -128,6 +128,21 @@ as Sun, Moon, or the active tracked source, and associates that target AZ/EL
 with the antenna's current physical pointing. Calibration AZ must be 0..360
 degrees and calibration EL must be 0..90 degrees.
 
+`Peak Cal` is intended for source-peaking calibration where timing matters. It
+keeps one axis tracking while the other axis is manually jogged to maximum
+source power, then locks only the manually peaked axis with one button press:
+
+1. Select `Sun`, `Moon`, or `Selected Source`.
+2. Select the antenna.
+3. Use `Track AZ Only` when manually peaking EL, or `Track EL Only` when
+   manually peaking AZ.
+4. Jog the untracked axis until the received power is maximised.
+5. Press `LOCK EL CAL` or `LOCK AZ CAL`.
+
+The lock button reads the raw encoder position and source coordinate at that
+moment, updates only the selected axis offset, saves `wt3.ini`, and leaves the
+other axis offset unchanged.
+
 ## Encoder Scan
 
 Press `Encoders` to scan the Arduino encoder configuration for each connected
