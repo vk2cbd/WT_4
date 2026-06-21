@@ -2905,7 +2905,9 @@ class WT4App(tk.Tk):
     def scan_worker(self, axis: Axis, config: ScanConfig, dialog: ScanCalibrationDialog) -> None:
         rows: list[dict[str, object]] = []
         averaged_rows: list[dict[str, object]] = []
-        csv_path = Path(f"wt4_scan_{config.antenna_name.lower()}_{axis_label(axis).lower()}_{datetime.now():%Y%m%d-%H%M%S}.csv")
+        scan_dir = Path(self.config_path).parent / "Scan Cal"
+        scan_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = scan_dir / f"wt4_scan_{config.antenna_name.lower()}_{axis_label(axis).lower()}_{datetime.now():%Y%m%d-%H%M%S}.csv"
         try:
             offsets = self.scan_offsets(config)
             total_points = len(offsets) * config.scan_count
@@ -2953,8 +2955,8 @@ class WT4App(tk.Tk):
             if averaged_rows:
                 self.event_log.info("SCAN_COMPLETE", antenna=config.antenna_name, axis=axis_label(axis), csv=str(csv_path))
                 self.events.put(("ok", lambda _unused: ScanGraphDialog(self, axis, averaged_rows, csv_path, config.antenna_name), None))
-                self.events.put(("ok", dialog.set_status, f"Scan complete: {csv_path.name}"))
-                self.events.put(("ok", self.set_status, f"Scan complete: {csv_path.name}"))
+                self.events.put(("ok", dialog.set_status, f"Scan complete: {csv_path}"))
+                self.events.put(("ok", self.set_status, f"Scan complete: {csv_path}"))
             else:
                 self.events.put(("ok", dialog.set_status, "Scan stopped before measurements were taken."))
         except Exception as exc:
