@@ -43,7 +43,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.2"
+APP_VERSION = "v4.3"
 
 
 def axis_label(axis: Axis) -> str:
@@ -2494,7 +2494,7 @@ class WT4App(tk.Tk):
                 panel.status_var.set("CONNECTING")
                 panel.fault_var.set("")
         self.status_var.set(f"Connecting {len(pending)} antenna(s)...")
-        self.run_worker(lambda: self.connect_sessions_sequential(pending), self.finish_connect_all, self.finish_connect_fault)
+        self.run_worker(lambda: self.connect_sessions_parallel(pending), self.finish_connect_all, self.finish_connect_fault)
 
     def connect_session(self, config) -> SafeAntenna:
         session: Optional[SafeAntenna] = None
@@ -2510,22 +2510,31 @@ class WT4App(tk.Tk):
                     pass
             raise
 
-    def connect_sessions_sequential(self, pending: list[tuple[str, AntennaConfig]]) -> tuple[list[tuple[str, SafeAntenna]], list[str]]:
+    def connect_sessions_parallel(self, pending: list[tuple[str, AntennaConfig]]) -> tuple[list[tuple[str, SafeAntenna]], list[str]]:
         connected: list[tuple[str, SafeAntenna]] = []
         errors: list[str] = []
-        for name, config in pending:
+        lock = threading.Lock()
+
+        def connect_one(name: str, config: AntennaConfig) -> None:
             last_error = ""
             for attempt in range(1, 4):
                 try:
-                    connected.append((name, self.connect_session(config)))
-                    last_error = ""
-                    break
+                    session = self.connect_session(config)
+                    with lock:
+                        connected.append((name, session))
+                    return
                 except Exception as exc:
                     last_error = str(exc)
                     if attempt < 3:
                         time.sleep(max(1.0, config.open_delay * 0.5))
-            if last_error:
+            with lock:
                 errors.append(f"{name}: {last_error}")
+
+        threads = [threading.Thread(target=connect_one, args=(name, config), daemon=True) for name, config in pending]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
         return connected, errors
 
     def finish_connect_all(self, result: tuple[list[tuple[str, SafeAntenna]], list[str]]) -> None:
@@ -2533,6 +2542,12 @@ class WT4App(tk.Tk):
         connected_sessions, errors = result
         for name, session in connected_sessions:
             self.attach_session(name, session, update_status=False)
+        if connected_sessions:
+            self.run_worker(
+                lambda names=[name for name, _session in connected_sessions]: self.refresh_connected_oled(names),
+                lambda _result: None,
+                self.set_status,
+            )
         for error in errors:
             name = error.split(":", 1)[0]
             panel = self.panels.get(name)
@@ -2548,6 +2563,12 @@ class WT4App(tk.Tk):
     def finish_connect_fault(self, text: str) -> None:
         self.connecting_active = False
         self.status_var.set(f"Connect fault: {text}")
+
+    def refresh_connected_oled(self, names: list[str]) -> None:
+        for name in names:
+            session = self.sessions.get(name)
+            if session:
+                session.update_oled("MANUAL", activity="STOPPED")
 
     def attach_session(self, name: str, session: SafeAntenna, update_status: bool = True) -> None:
         self.sessions[name] = session
