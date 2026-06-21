@@ -43,7 +43,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.1"
+APP_VERSION = "v4.2"
 
 
 def axis_label(axis: Axis) -> str:
@@ -1407,12 +1407,12 @@ class AntennaPanel(ttk.Frame):
         self.fault_var.set("")
         self.update_position(session.last_position)
 
-    def detach(self) -> None:
+    def detach(self, status: str = "DISCONNECTED", message: str = "") -> None:
         self.stop_event.set()
         self.session = None
         self.jog_thread_active = False
-        self.status_var.set("DISCONNECTED")
-        self.fault_var.set("")
+        self.status_var.set(status)
+        self.fault_var.set(message)
         self.clear_position_fields()
 
     def clear_position_fields(self) -> None:
@@ -1455,7 +1455,7 @@ class AntennaPanel(ttk.Frame):
     def refresh(self) -> None:
         if not self.session:
             return
-        self.app.run_worker(lambda: self.session.read_position(), self.finish_refresh, self.set_message)
+        self.app.run_worker(lambda: self.session.read_position(), self.finish_refresh, self.finish_refresh_fault)
 
     def commit_speed(self, _event: Optional[object] = None) -> bool:
         try:
@@ -1516,6 +1516,9 @@ class AntennaPanel(ttk.Frame):
     def finish_refresh(self, position: Position) -> None:
         self.clear_message()
         self.update_position(position)
+
+    def finish_refresh_fault(self, text: str) -> None:
+        self.app.handle_controller_fault(self.name, text)
 
     def finish_jog(self, position: Position) -> None:
         self.jog_thread_active = False
@@ -2377,6 +2380,10 @@ class WT4App(tk.Tk):
         self.scan_config = load_scan_config(config_path)
         self.sessions: dict[str, SafeAntenna] = {}
         self.events: queue.Queue[tuple[str, object, object]] = queue.Queue()
+        self.connecting_active = False
+        self.health_check_active = False
+        self.last_health_check = 0.0
+        self.health_check_interval = 2.0
         self.tracking_stop_event = threading.Event()
         self.park_stop_event = threading.Event()
         self.scan_stop_event = threading.Event()
@@ -2473,27 +2480,83 @@ class WT4App(tk.Tk):
         self.after(1500, self.periodic_refresh)
 
     def connect_all(self) -> None:
-        for name, config in self.configs.items():
-            if name in self.sessions:
-                continue
-            self.run_worker(
-                lambda cfg=config: self.connect_session(cfg),
-                lambda session, n=name: self.attach_session(n, session),
-                self.set_status,
-            )
+        if self.connecting_active:
+            self.status_var.set("Connection already in progress.")
+            return
+        pending = [(name, config) for name, config in self.configs.items() if name not in self.sessions]
+        if not pending:
+            self.status_var.set("Already connected.")
+            return
+        self.connecting_active = True
+        for name, _config in pending:
+            panel = self.panels.get(name)
+            if panel:
+                panel.status_var.set("CONNECTING")
+                panel.fault_var.set("")
+        self.status_var.set(f"Connecting {len(pending)} antenna(s)...")
+        self.run_worker(lambda: self.connect_sessions_sequential(pending), self.finish_connect_all, self.finish_connect_fault)
 
     def connect_session(self, config) -> SafeAntenna:
-        session = SafeAntenna(config)
-        session.update_oled("MANUAL", activity="STOPPED")
-        return session
+        session: Optional[SafeAntenna] = None
+        try:
+            session = SafeAntenna(config)
+            session.update_oled("MANUAL", activity="STOPPED")
+            return session
+        except Exception:
+            if session:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+            raise
 
-    def attach_session(self, name: str, session: SafeAntenna) -> None:
+    def connect_sessions_sequential(self, pending: list[tuple[str, AntennaConfig]]) -> tuple[list[tuple[str, SafeAntenna]], list[str]]:
+        connected: list[tuple[str, SafeAntenna]] = []
+        errors: list[str] = []
+        for name, config in pending:
+            last_error = ""
+            for attempt in range(1, 4):
+                try:
+                    connected.append((name, self.connect_session(config)))
+                    last_error = ""
+                    break
+                except Exception as exc:
+                    last_error = str(exc)
+                    if attempt < 3:
+                        time.sleep(max(1.0, config.open_delay * 0.5))
+            if last_error:
+                errors.append(f"{name}: {last_error}")
+        return connected, errors
+
+    def finish_connect_all(self, result: tuple[list[tuple[str, SafeAntenna]], list[str]]) -> None:
+        self.connecting_active = False
+        connected_sessions, errors = result
+        for name, session in connected_sessions:
+            self.attach_session(name, session, update_status=False)
+        for error in errors:
+            name = error.split(":", 1)[0]
+            panel = self.panels.get(name)
+            if panel:
+                panel.detach("DISCONNECTED", error)
+        connected = len(self.sessions)
+        total = len(self.configs)
+        if errors:
+            self.status_var.set(f"Connected {connected}/{total}; connect fault: {'; '.join(errors)}")
+        else:
+            self.status_var.set(f"Stopped. Connected {connected}/{total} antennas.")
+
+    def finish_connect_fault(self, text: str) -> None:
+        self.connecting_active = False
+        self.status_var.set(f"Connect fault: {text}")
+
+    def attach_session(self, name: str, session: SafeAntenna, update_status: bool = True) -> None:
         self.sessions[name] = session
         if name in self.panels:
             self.panels[name].attach(session)
-        connected = len(self.sessions)
-        total = len(self.configs)
-        self.status_var.set(f"Stopped. Connected {connected}/{total} antennas.")
+        if update_status:
+            connected = len(self.sessions)
+            total = len(self.configs)
+            self.status_var.set(f"Stopped. Connected {connected}/{total} antennas.")
 
     def disconnect_all(self) -> None:
         if self.parking_active:
@@ -2522,6 +2585,71 @@ class WT4App(tk.Tk):
             self.status_var.set(f"Stopped. Connected {connected}/{total} antennas.")
         else:
             self.status_var.set("Disconnected.")
+
+    def handle_controller_fault(self, name: str, message: str) -> None:
+        session = self.sessions.pop(name, None)
+        panel = self.panels.get(name)
+        if panel:
+            panel.detach("OFFLINE", message)
+        if session is None:
+            return
+
+        self.tracking_stop_event.set()
+        self.scan_stop_event.set()
+        self.park_stop_event.set()
+        self.tracking_active = False
+        self.scan_active = False
+        self.parking_active = False
+        self.set_scan_offset(None)
+        self.status_var.set(f"{name} controller offline: {message}")
+
+        self.run_worker(lambda s=session: s.close(), lambda _result: None, lambda _text: None)
+        for other_name, other_session in list(self.sessions.items()):
+            other_panel = self.panels.get(other_name)
+            if other_panel:
+                other_panel.status_var.set("STOPPED")
+            self.run_worker(
+                lambda s=other_session: (s.stop_all(), s.update_oled_activity("STOPPED")),
+                lambda _result: None,
+                lambda text, n=other_name: self.handle_controller_fault(n, text),
+            )
+
+    def handle_controller_fault_event(self, payload: tuple[str, str]) -> None:
+        name, message = payload
+        self.handle_controller_fault(name, message)
+
+    def read_positions_for_health(self) -> tuple[dict[str, Position], list[tuple[str, str]]]:
+        positions: dict[str, Position] = {}
+        errors: list[tuple[str, str]] = []
+        for name, session in list(self.sessions.items()):
+            try:
+                positions[name] = session.read_position()
+            except Exception as exc:
+                errors.append((name, str(exc)))
+        return positions, errors
+
+    def check_controller_health(self, force: bool = False) -> None:
+        if self.health_check_active or not self.sessions:
+            return
+        now = time.monotonic()
+        if not force and now - self.last_health_check < self.health_check_interval:
+            return
+        self.last_health_check = now
+        self.health_check_active = True
+        self.run_worker(self.read_positions_for_health, self.finish_controller_health, self.finish_controller_health_fault)
+
+    def finish_controller_health(self, result: tuple[dict[str, Position], list[tuple[str, str]]]) -> None:
+        self.health_check_active = False
+        positions, errors = result
+        for name, position in positions.items():
+            if name in self.sessions and name in self.panels:
+                self.panels[name].update_position(position)
+        for name, message in errors:
+            self.handle_controller_fault(name, message)
+
+    def finish_controller_health_fault(self, message: str) -> None:
+        self.health_check_active = False
+        self.status_var.set(f"Health check fault: {message}")
 
     def refresh_all(self) -> None:
         for panel in self.panels.values():
@@ -3110,7 +3238,7 @@ class WT4App(tk.Tk):
                     self.events.put(("position", panel.update_position, position))
                     self.events.put(("ok", panel.set_tracking_status, final_activity))
                 except Exception as exc:
-                    self.events.put(("error", panel.set_fault, str(exc)))
+                    self.events.put(("ok", self.handle_controller_fault_event, (name, str(exc))))
                     with lock:
                         errors.append(f"{name}: {exc}")
 
@@ -3325,9 +3453,11 @@ class WT4App(tk.Tk):
         self.status_var.set("Stopped.")
 
     def periodic_refresh(self) -> None:
-        if not self.tracking_active and not self.parking_active:
+        if not self.tracking_active and not self.parking_active and not self.scan_active:
             self.refresh_all()
-        elif self.tracking_active:
+        else:
+            self.check_controller_health()
+        if self.tracking_active:
             self.refresh_tracking_target_display()
             self.check_tracking_watchdog()
         self.update_reference_positions()
