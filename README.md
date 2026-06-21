@@ -121,15 +121,23 @@ The power-meter module currently provides:
 - synchronous RTL-SDR sample capture using `librtlsdr`
 
 The main GUI also includes a compact RTL Power Meter panel. Set frequency in
-MHz, sample rate in ksps, gain, samples/read in kilosamples, GUI refresh rate, averaging, and
+MHz, sample rate in ksps, gain, PPM correction, samples/read in kilosamples, GUI refresh rate, averaging, and
 warm-up seconds, then press `Start Power`. `Sample ksps` sets the RTL sample rate and
 therefore the approximate RF bandwidth accepted by the dongle/driver. `GUI Hz`
 sets the desired power display refresh rate. Set `Samples` to `auto` or `0` to calculate samples/read from
-the converted sample rate divided by `GUI Hz`. The displayed value is relative dBFS; less-negative
-values mean stronger received power. Power-meter settings are saved in
+the converted sample rate divided by `GUI Hz`. With no matching calibration the displayed value is relative
+dBFS; less-negative values mean stronger received power. With a matching RTL calibration the displayed
+value changes to calibrated equivalent CW dBm. Power-meter settings are saved in
 `wt4.ini` when the meter starts or the GUI closes. During warm-up the live
 reading is shown, but the status remains `Warming` until the configured settling
 time has elapsed, then changes to `Ready`.
+
+For repeatable measurements, WT4 explicitly disables RTL AGC where supported by
+`librtlsdr`, uses manual tuner gain whenever the gain field is numeric, applies
+the configured PPM correction, resets the USB buffer, and discards the first
+couple of sample blocks after receiver start. If the gain field is blank,
+`auto`, or `0`, WT4 uses RTL automatic tuner gain and flags readings as
+uncalibrated.
 
 Use `Start Log` to write a timestamped `wt4_power_YYYYMMDD-HHMMSS.csv` file
 containing power, target position, and the latest antenna positions. This is the
@@ -137,11 +145,16 @@ first step toward source sweep calibration; it is passive and does not command
 the antennas.
 
 Use `RTL Cal` to record a signal-generator calibration table for a nominated
-frequency. Set the RTL panel frequency and receiver settings, start the power
-meter, open `RTL Cal`, enter the calibration frequency in MHz, then step the
-signal source from `-100 dBm` to `-20 dBm` in `10 dB` steps and press `Capture`
-for each row. Press `Save` to write the dBm-to-dBFS table into a frequency
-specific `[rtl_cal:<frequency_hz>]` section of `wt4.ini`.
+frequency, sample rate, and gain. Set the RTL panel frequency and receiver
+settings, start the power meter, open `RTL Cal`, then step the signal source
+from `-40 dBm` down to `-110 dBm` in `10 dB` steps and press `Capture` for each
+row. Press `Save` to write the dBm-to-dBFS table into a
+`[rtl_cal:<frequency_hz>:<sample_rate_hz>:<gain>]` section of `wt4.ini`.
+The GUI uses interpolation and extrapolation from that table. If frequency,
+sample rate, or gain do not match a stored calibration, the meter and scans are
+flagged as uncalibrated and remain in dBFS. The calibration is an equivalent
+CW dBm calibration; broadband noise-power calibration can be layered on later
+with a noise bandwidth or Y-factor correction if needed.
 
 `Scan Cal` performs a source-relative calibration scan while normal tracking
 continues. Start tracking Sun, Moon, or a selected source, start the RTL power

@@ -40,6 +40,7 @@ class PowerConfig:
     center_frequency_hz: int = 1_200_000_000
     sample_rate_hz: int = 1_024_000
     gain_db: str = "29.7"
+    frequency_correction_ppm: int = 0
     samples_per_read: str = "auto"
     update_rate_hz: float = 10.0
     smoothing_samples: int = 3
@@ -58,7 +59,12 @@ class ScanConfig:
 @dataclass
 class RtlCalibration:
     frequency_hz: int
+    sample_rate_hz: int
+    gain_db: str
     points_dbfs_by_dbm: dict[int, float]
+
+
+RTL_CAL_LEVELS_DBM = tuple(range(-40, -111, -10))
 
 
 def load_site_config(path: Union[str, Path]) -> SiteConfig:
@@ -91,18 +97,24 @@ def load_site_config(path: Union[str, Path]) -> SiteConfig:
     )
 
 
-def load_rtl_calibration(path: Union[str, Path], frequency_hz: int) -> RtlCalibration:
+def load_rtl_calibration(path: Union[str, Path], frequency_hz: int, sample_rate_hz: int, gain_db: str) -> RtlCalibration:
     path = Path(path)
     parser = configparser.ConfigParser()
     if path.exists():
         parser.read(path)
-    section = _rtl_cal_section(frequency_hz)
+    gain_db = normalize_rtl_gain(gain_db)
+    section = _rtl_cal_section(frequency_hz, sample_rate_hz, gain_db)
     points: dict[int, float] = {}
-    for level_dbm in range(-100, -19, 10):
+    for level_dbm in RTL_CAL_LEVELS_DBM:
         key = _rtl_cal_key(level_dbm)
         if parser.has_option(section, key):
             points[level_dbm] = parser.getfloat(section, key)
-    return RtlCalibration(frequency_hz=frequency_hz, points_dbfs_by_dbm=points)
+    return RtlCalibration(
+        frequency_hz=frequency_hz,
+        sample_rate_hz=sample_rate_hz,
+        gain_db=gain_db,
+        points_dbfs_by_dbm=points,
+    )
 
 
 def save_rtl_calibration(path: Union[str, Path], calibration: RtlCalibration) -> None:
@@ -110,17 +122,58 @@ def save_rtl_calibration(path: Union[str, Path], calibration: RtlCalibration) ->
     parser = configparser.ConfigParser()
     if path.exists():
         parser.read(path)
-    section = _rtl_cal_section(calibration.frequency_hz)
-    parser[section] = {"frequency_hz": str(int(calibration.frequency_hz))}
-    for level_dbm in range(-100, -19, 10):
+    section = _rtl_cal_section(calibration.frequency_hz, calibration.sample_rate_hz, calibration.gain_db)
+    parser[section] = {
+        "frequency_hz": str(int(calibration.frequency_hz)),
+        "sample_rate_hz": str(int(calibration.sample_rate_hz)),
+        "gain_db": normalize_rtl_gain(calibration.gain_db),
+    }
+    for level_dbm in RTL_CAL_LEVELS_DBM:
         if level_dbm in calibration.points_dbfs_by_dbm:
             parser[section][_rtl_cal_key(level_dbm)] = f"{calibration.points_dbfs_by_dbm[level_dbm]:.3f}"
     with path.open("w", encoding="utf-8") as handle:
         parser.write(handle)
 
 
-def _rtl_cal_section(frequency_hz: int) -> str:
-    return f"rtl_cal:{int(frequency_hz)}"
+def calibrated_dbm_from_dbfs(calibration: RtlCalibration, power_dbfs: float) -> tuple[float, bool] | None:
+    points = sorted((dbfs, dbm) for dbm, dbfs in calibration.points_dbfs_by_dbm.items())
+    if not points:
+        return None
+    if len(points) == 1:
+        dbfs, dbm = points[0]
+        return dbm + (power_dbfs - dbfs), True
+    if power_dbfs <= points[0][0]:
+        return _interpolate_calibration(points[0], points[1], power_dbfs), True
+    if power_dbfs >= points[-1][0]:
+        return _interpolate_calibration(points[-2], points[-1], power_dbfs), True
+    for lower, upper in zip(points, points[1:]):
+        if lower[0] <= power_dbfs <= upper[0]:
+            return _interpolate_calibration(lower, upper, power_dbfs), False
+    return None
+
+
+def _interpolate_calibration(lower: tuple[float, int], upper: tuple[float, int], power_dbfs: float) -> float:
+    lower_dbfs, lower_dbm = lower
+    upper_dbfs, upper_dbm = upper
+    if upper_dbfs == lower_dbfs:
+        return float(lower_dbm)
+    fraction = (power_dbfs - lower_dbfs) / (upper_dbfs - lower_dbfs)
+    return lower_dbm + fraction * (upper_dbm - lower_dbm)
+
+
+def _rtl_cal_section(frequency_hz: int, sample_rate_hz: int, gain_db: str) -> str:
+    return f"rtl_cal:{int(frequency_hz)}:{int(sample_rate_hz)}:{_rtl_gain_key_part(gain_db)}"
+
+
+def normalize_rtl_gain(gain_db: str) -> str:
+    text = str(gain_db).strip().lower()
+    if text in ("", "auto", "0"):
+        return "auto"
+    return f"{float(text):0.1f}"
+
+
+def _rtl_gain_key_part(gain_db: str) -> str:
+    return normalize_rtl_gain(gain_db).replace("-", "m").replace(".", "p")
 
 
 def _rtl_cal_key(level_dbm: int) -> str:
@@ -166,6 +219,7 @@ def load_power_config(path: Union[str, Path]) -> PowerConfig:
         center_frequency_hz=parser.getint("power", "center_frequency_hz", fallback=1_200_000_000),
         sample_rate_hz=parser.getint("power", "sample_rate_hz", fallback=1_024_000),
         gain_db=parser.get("power", "gain_db", fallback="29.7").strip() or "auto",
+        frequency_correction_ppm=parser.getint("power", "frequency_correction_ppm", fallback=0),
         samples_per_read=parser.get("power", "samples_per_read", fallback="auto").strip() or "auto",
         update_rate_hz=parser.getfloat("power", "update_rate_hz", fallback=10.0),
         smoothing_samples=parser.getint("power", "smoothing_samples", fallback=3),
@@ -182,6 +236,7 @@ def save_power_config(path: Union[str, Path], power: PowerConfig) -> None:
         "center_frequency_hz": str(int(power.center_frequency_hz)),
         "sample_rate_hz": str(int(power.sample_rate_hz)),
         "gain_db": power.gain_db,
+        "frequency_correction_ppm": str(int(power.frequency_correction_ppm)),
         "samples_per_read": power.samples_per_read,
         "update_rate_hz": f"{power.update_rate_hz:.1f}",
         "smoothing_samples": str(max(1, int(power.smoothing_samples))),

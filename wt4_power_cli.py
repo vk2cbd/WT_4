@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--update-rate", type=float, default=10.0, help="Power update rate in Hz.")
     parser.add_argument("--device", type=int, default=0, help="RTL-SDR device index.")
     parser.add_argument("--gain", type=float, default=None, help="Manual tuner gain in dB. Omit for auto gain.")
+    parser.add_argument("--ppm", type=int, default=0, help="RTL-SDR frequency correction in PPM.")
     parser.add_argument("--count", type=int, default=0, help="Number of readings to print. 0 means continuous.")
     parser.add_argument(
         "--samples",
@@ -37,6 +38,7 @@ def main() -> int:
         update_rate_hz=args.update_rate,
         device_index=args.device,
         gain_db=args.gain,
+        frequency_correction_ppm=args.ppm,
         samples_per_read=None if args.samples == 0 else args.samples,
     )
     config.validate()
@@ -46,7 +48,8 @@ def main() -> int:
         f"rate={config.sample_rate_hz} sps "
         f"updates={config.update_rate_hz:0.1f} Hz "
         f"samples/update={config.samples_per_update} "
-        f"gain={'auto' if config.gain_db is None else f'{config.gain_db:0.1f} dB'}",
+        f"gain={'auto' if config.gain_db is None else f'{config.gain_db:0.1f} dB'} "
+        f"ppm={config.frequency_correction_ppm}",
         flush=True,
     )
 

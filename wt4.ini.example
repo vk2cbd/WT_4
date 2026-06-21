@@ -16,16 +16,19 @@ el_slow_threshold_degrees = 3.0
 center_frequency_hz = 1200000000
 sample_rate_hz = 1024000
 gain_db = 29.7
+frequency_correction_ppm = 0
 samples_per_read = auto
 update_rate_hz = 10.0
 smoothing_samples = 3
 warmup_seconds = 30.0
 
-# Created/updated by RTL Cal. Each section is frequency specific.
-# [rtl_cal:1200000000]
+# Created/updated by RTL Cal. Each section is frequency/sample-rate/gain specific.
+# [rtl_cal:1200000000:1024000:29p7]
 # frequency_hz = 1200000000
-# dbm_-100 = -72.300
-# dbm_-90 = -62.100
+# sample_rate_hz = 1024000
+# gain_db = 29.7
+# dbm_-40 = -12.300
+# dbm_-50 = -22.100
 
 [scan]
 span_degrees = 4.000

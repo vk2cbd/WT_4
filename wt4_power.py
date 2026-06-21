@@ -22,8 +22,10 @@ class PowerMeterConfig:
     update_rate_hz: float = 10.0
     device_index: int = 0
     gain_db: Optional[float] = None
+    frequency_correction_ppm: int = 0
     smoothing_samples: int = 3
     samples_per_read: Optional[int] = None
+    discard_reads: int = 2
 
     def validate(self) -> None:
         if self.center_frequency_hz <= 0:
@@ -40,6 +42,8 @@ class PowerMeterConfig:
             raise ValueError("smoothing samples must be at least 1")
         if self.samples_per_read is not None and self.samples_per_read < 256:
             raise ValueError("samples per read must be at least 256")
+        if self.discard_reads < 0:
+            raise ValueError("discard reads must not be negative")
 
     @property
     def samples_per_update(self) -> int:
@@ -112,10 +116,17 @@ class RtlSdrDevice:
     def configure(self, config: PowerMeterConfig) -> None:
         config.validate()
         self._check(self._lib.rtlsdr_set_sample_rate(self._dev, ctypes.c_uint32(config.sample_rate_hz)), "set sample rate")
+        if hasattr(self._lib, "rtlsdr_set_freq_correction"):
+            self._check(
+                self._lib.rtlsdr_set_freq_correction(self._dev, ctypes.c_int(config.frequency_correction_ppm)),
+                "set frequency correction",
+            )
         self._check(
             self._lib.rtlsdr_set_center_freq(self._dev, ctypes.c_uint32(config.center_frequency_hz)),
             "set center frequency",
         )
+        if hasattr(self._lib, "rtlsdr_set_agc_mode"):
+            self._check(self._lib.rtlsdr_set_agc_mode(self._dev, 0), "disable RTL AGC")
         if config.gain_db is None:
             self._check(self._lib.rtlsdr_set_tuner_gain_mode(self._dev, 0), "enable automatic gain")
         else:
@@ -143,6 +154,7 @@ class RtlPowerMeter:
         self.config = config
         self.device = RtlSdrDevice(config.device_index)
         self.device.configure(config)
+        self.discard_initial_samples()
 
     def close(self) -> None:
         self.device.close()
@@ -159,6 +171,11 @@ class RtlPowerMeter:
     def read_power(self) -> PowerReading:
         data = self.device.read_sync(self.config.samples_per_update * 2)
         return power_dbfs_from_unsigned_iq(data)
+
+    def discard_initial_samples(self) -> None:
+        byte_count = self.config.samples_per_update * 2
+        for _index in range(self.config.discard_reads):
+            self.device.read_sync(byte_count)
 
 
 def _load_librtlsdr():
@@ -188,6 +205,12 @@ def _configure_librtlsdr_api(lib) -> None:
     lib.rtlsdr_set_center_freq.restype = ctypes.c_int
     lib.rtlsdr_set_sample_rate.argtypes = [dev_p, ctypes.c_uint32]
     lib.rtlsdr_set_sample_rate.restype = ctypes.c_int
+    if hasattr(lib, "rtlsdr_set_freq_correction"):
+        lib.rtlsdr_set_freq_correction.argtypes = [dev_p, ctypes.c_int]
+        lib.rtlsdr_set_freq_correction.restype = ctypes.c_int
+    if hasattr(lib, "rtlsdr_set_agc_mode"):
+        lib.rtlsdr_set_agc_mode.argtypes = [dev_p, ctypes.c_int]
+        lib.rtlsdr_set_agc_mode.restype = ctypes.c_int
     lib.rtlsdr_set_tuner_gain_mode.argtypes = [dev_p, ctypes.c_int]
     lib.rtlsdr_set_tuner_gain_mode.restype = ctypes.c_int
     lib.rtlsdr_set_tuner_gain.argtypes = [dev_p, ctypes.c_int]

@@ -19,15 +19,18 @@ from wt4_astro import TargetPosition, local_sidereal_time, moon_equatorial, moon
 from wt4_config import (
     PowerConfig,
     RtlCalibration,
+    RTL_CAL_LEVELS_DBM,
     ScanConfig,
     SiteConfig,
     SourceConfig,
+    calibrated_dbm_from_dbfs,
     load_configs,
     load_power_config,
     load_rtl_calibration,
     load_scan_config,
     load_site_config,
     load_sources,
+    normalize_rtl_gain,
     save_configs,
     save_power_config,
     save_rtl_calibration,
@@ -40,7 +43,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.0"
+APP_VERSION = "v4.1"
 
 
 def axis_label(axis: Axis) -> str:
@@ -1542,6 +1545,12 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.power_started_at = 0.0
         self.warmup_seconds = 0.0
         self.history_values: list[float] = []
+        self.history_display_values: list[float] = []
+        self.latest_power_value: Optional[float] = None
+        self.latest_power_unit = "dBFS"
+        self.latest_power_calibrated = False
+        self.latest_power_extrapolated = False
+        self.active_calibration: Optional[RtlCalibration] = None
         self.log_handle = None
         self.log_writer: Optional[csv.writer] = None
         self.log_path: Optional[Path] = None
@@ -1550,6 +1559,7 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.freq_var = tk.StringVar(value=f"{power.center_frequency_hz / 1_000_000:0.1f}")
         self.rate_var = tk.StringVar(value=f"{power.sample_rate_hz / 1000:0.0f}")
         self.gain_var = tk.StringVar(value=power.gain_db)
+        self.ppm_var = tk.StringVar(value=str(power.frequency_correction_ppm))
         self.samples_var = tk.StringVar(value=self.samples_display_value(power.samples_per_read))
         self.update_var = tk.StringVar(value=f"{power.update_rate_hz:0.0f}")
         self.smooth_var = tk.StringVar(value=str(power.smoothing_samples))
@@ -1560,15 +1570,16 @@ class PowerMeterPanel(ttk.LabelFrame):
 
         fields = ttk.Frame(self)
         fields.grid(row=0, column=0, sticky="ew")
-        for column in range(14):
+        for column in range(16):
             fields.columnconfigure(column, weight=1 if column % 2 else 0)
         self._entry(fields, "Freq MHz", self.freq_var, 0, width=7)
         self._entry(fields, "Sample ksps", self.rate_var, 2, width=6)
         self._entry(fields, "Gain", self.gain_var, 4, width=6)
-        self._entry(fields, "Samples k", self.samples_var, 6, width=7)
-        self._entry(fields, "GUI Hz", self.update_var, 8, width=5)
-        self._entry(fields, "Avg", self.smooth_var, 10, width=4)
-        self._entry(fields, "Warm s", self.warmup_var, 12, width=5)
+        self._entry(fields, "PPM", self.ppm_var, 6, width=5)
+        self._entry(fields, "Samples k", self.samples_var, 8, width=7)
+        self._entry(fields, "GUI Hz", self.update_var, 10, width=5)
+        self._entry(fields, "Avg", self.smooth_var, 12, width=4)
+        self._entry(fields, "Warm s", self.warmup_var, 14, width=5)
 
         controls = ttk.Frame(self)
         controls.grid(row=1, column=0, sticky="ew", pady=(6, 0))
@@ -1607,6 +1618,7 @@ class PowerMeterPanel(ttk.LabelFrame):
             center_frequency_hz=freq_hz,
             sample_rate_hz=sample_rate_hz,
             gain_db=self.gain_var.get().strip() or "auto",
+            frequency_correction_ppm=int(self.ppm_var.get() or "0"),
             samples_per_read=self.samples_stored_value(),
             update_rate_hz=float(self.update_var.get()),
             smoothing_samples=max(1, int(self.smooth_var.get())),
@@ -1625,6 +1637,7 @@ class PowerMeterPanel(ttk.LabelFrame):
             measurement_bandwidth_hz=power.sample_rate_hz,
             update_rate_hz=power.update_rate_hz,
             gain_db=gain,
+            frequency_correction_ppm=power.frequency_correction_ppm,
             smoothing_samples=power.smoothing_samples,
             samples_per_read=samples,
         )
@@ -1641,6 +1654,8 @@ class PowerMeterPanel(ttk.LabelFrame):
     def format_fields(self, power: PowerConfig) -> None:
         self.freq_var.set(f"{power.center_frequency_hz / 1_000_000:0.1f}")
         self.rate_var.set(f"{power.sample_rate_hz / 1000:0.0f}")
+        self.gain_var.set(power.gain_db)
+        self.ppm_var.set(str(power.frequency_correction_ppm))
         self.samples_var.set(self.samples_display_value(power.samples_per_read))
         self.update_var.set(f"{power.update_rate_hz:0.0f}")
         self.smooth_var.set(str(power.smoothing_samples))
@@ -1671,6 +1686,10 @@ class PowerMeterPanel(ttk.LabelFrame):
             "local_time",
             "utc_time",
             "power_dbfs",
+            "power_value",
+            "power_unit",
+            "power_calibrated",
+            "power_extrapolated",
             "target_name",
             "target_az",
             "target_el",
@@ -1689,6 +1708,10 @@ class PowerMeterPanel(ttk.LabelFrame):
             now_local.isoformat(timespec="milliseconds"),
             now_utc.isoformat(timespec="milliseconds"),
             f"{power_dbfs:0.2f}",
+            f"{self.latest_power_value:0.2f}" if self.latest_power_value is not None else "",
+            self.latest_power_unit,
+            "yes" if self.latest_power_calibrated else "no",
+            "yes" if self.latest_power_extrapolated else "no",
             self.app.target_name_var.get().replace("Target ", ""),
             f"{target.azimuth:0.3f}" if target else "",
             f"{target.elevation:0.3f}" if target else "",
@@ -1728,9 +1751,15 @@ class PowerMeterPanel(ttk.LabelFrame):
         save_power_config(self.app.config_path, self.app.power_config)
         self.power_values.clear()
         self.history_values.clear()
+        self.history_display_values.clear()
         self.last_reading_time = 0.0
         self.power_started_at = time.monotonic()
         self.warmup_seconds = power_config.warmup_seconds
+        self.active_calibration = self.load_active_calibration(power_config)
+        self.latest_power_value = None
+        self.latest_power_unit = "dBFS"
+        self.latest_power_calibrated = False
+        self.latest_power_extrapolated = False
         self.power_var.set("--.- dBFS")
         self.stats_var.set("Avg -- Min -- Max --")
         self.stop_event.clear()
@@ -1775,24 +1804,86 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.power_values = self.power_values[-smoothing:]
         average = sum(self.power_values) / len(self.power_values)
         self.latest_power_dbfs = average
-        self.power_var.set(f"{average:0.1f} dBFS")
+        measurement = self.display_measurement(average)
+        self.latest_power_value = float(measurement["power_value"])
+        self.latest_power_unit = str(measurement["power_unit"])
+        self.latest_power_calibrated = bool(measurement["power_calibrated"])
+        self.latest_power_extrapolated = bool(measurement["power_extrapolated"])
+        suffix = " EXT" if self.latest_power_extrapolated else ""
+        self.power_var.set(f"{self.latest_power_value:0.1f} {self.latest_power_unit}{suffix}")
         self.history_values.append(average)
         self.history_values = self.history_values[-600:]
-        history_average = sum(self.history_values) / len(self.history_values)
+        self.history_display_values.append(self.latest_power_value)
+        self.history_display_values = self.history_display_values[-600:]
+        history_average = sum(self.history_display_values) / len(self.history_display_values)
         self.stats_var.set(
-            f"Avg {history_average:0.1f} Min {min(self.history_values):0.1f} Max {max(self.history_values):0.1f}"
+            f"Avg {history_average:0.1f} Min {min(self.history_display_values):0.1f} "
+            f"Max {max(self.history_display_values):0.1f}"
         )
         self.log_reading(average)
         self.refresh_warmup_status(None)
+
+    def load_active_calibration(self, power: PowerConfig) -> Optional[RtlCalibration]:
+        try:
+            calibration = load_rtl_calibration(
+                self.app.config_path,
+                power.center_frequency_hz,
+                power.sample_rate_hz,
+                power.gain_db,
+            )
+        except ValueError:
+            return None
+        if len(calibration.points_dbfs_by_dbm) < 2:
+            return None
+        return calibration
+
+    def display_measurement(self, power_dbfs: float) -> dict[str, object]:
+        if self.active_calibration:
+            converted = calibrated_dbm_from_dbfs(self.active_calibration, power_dbfs)
+            if converted:
+                power_dbm, extrapolated = converted
+                return {
+                    "power_dbfs": power_dbfs,
+                    "power_value": power_dbm,
+                    "power_unit": "dBm",
+                    "power_calibrated": True,
+                    "power_extrapolated": extrapolated,
+                }
+        return {
+            "power_dbfs": power_dbfs,
+            "power_value": power_dbfs,
+            "power_unit": "dBFS",
+            "power_calibrated": False,
+            "power_extrapolated": False,
+        }
+
+    def current_power_measurement(self) -> Optional[dict[str, object]]:
+        if self.latest_power_dbfs is None or self.is_warming():
+            return None
+        return self.display_measurement(self.latest_power_dbfs)
+
+    def is_warming(self) -> bool:
+        if not self.power_started_at:
+            return False
+        return time.monotonic() - self.power_started_at < self.warmup_seconds
 
     def refresh_warmup_status(self, _unused: object) -> None:
         if self.stop_event.is_set() or not self.power_started_at:
             return
         remaining = self.warmup_seconds - (time.monotonic() - self.power_started_at)
+        suffix = self.calibration_status_suffix()
         if remaining > 0:
-            self.status_var.set(f"Warming {remaining:0.0f}s")
+            self.status_var.set(f"Warming {remaining:0.0f}s {suffix}".strip())
         else:
-            self.status_var.set("Ready")
+            self.status_var.set(f"Ready {suffix}".strip())
+
+    def calibration_status_suffix(self) -> str:
+        if self.latest_power_calibrated or self.active_calibration:
+            return "CAL EXT" if self.latest_power_extrapolated else "CAL"
+        power = self.app.power_config
+        if normalize_rtl_gain(power.gain_db) == "auto":
+            return "UNCAL AUTO GAIN"
+        return "UNCAL"
 
     def set_status(self, text: str) -> None:
         self.status_var.set(text)
@@ -1802,15 +1893,21 @@ class PowerMeterPanel(ttk.LabelFrame):
         if self.stop_event.is_set():
             self.power_values.clear()
             self.history_values.clear()
+            self.history_display_values.clear()
             self.last_reading_time = 0.0
             self.latest_power_dbfs = None
+            self.latest_power_value = None
+            self.latest_power_unit = "dBFS"
+            self.latest_power_calibrated = False
+            self.latest_power_extrapolated = False
+            self.active_calibration = None
             self.power_var.set("--.- dBFS")
             self.stats_var.set("Avg -- Min -- Max --")
             self.status_var.set("Stopped")
 
 
 class RtlCalibrationDialog(tk.Toplevel):
-    LEVELS_DBM = tuple(range(-100, -19, 10))
+    LEVELS_DBM = RTL_CAL_LEVELS_DBM
 
     def __init__(self, app: "WT4App") -> None:
         super().__init__(app)
@@ -1820,6 +1917,8 @@ class RtlCalibrationDialog(tk.Toplevel):
         self.transient(app)
         self.grab_set()
         self.frequency_var = tk.StringVar(value=app.power_panel.freq_var.get())
+        self.sample_rate_var = tk.StringVar(value=app.power_panel.rate_var.get())
+        self.gain_var = tk.StringVar(value=app.power_panel.gain_var.get())
         self.status_var = tk.StringVar(value="Set signal source level, then capture each row.")
         self.level_vars: dict[int, tk.StringVar] = {level: tk.StringVar(value="--") for level in self.LEVELS_DBM}
 
@@ -1827,10 +1926,14 @@ class RtlCalibrationDialog(tk.Toplevel):
         body.grid(row=0, column=0, sticky="nsew")
         ttk.Label(body, text="Frequency MHz").grid(row=0, column=0, sticky="w", pady=2)
         ttk.Entry(body, textvariable=self.frequency_var, width=10).grid(row=0, column=1, sticky="w", pady=2)
-        ttk.Button(body, text="Load", command=self.load_frequency).grid(row=0, column=2, sticky="w", padx=(6, 0), pady=2)
+        ttk.Label(body, text="Sample ksps").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(body, textvariable=self.sample_rate_var, width=10).grid(row=1, column=1, sticky="w", pady=2)
+        ttk.Label(body, text="Gain").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(body, textvariable=self.gain_var, width=10).grid(row=2, column=1, sticky="w", pady=2)
+        ttk.Button(body, text="Load", command=self.load_frequency).grid(row=0, column=2, rowspan=3, sticky="nsw", padx=(6, 0), pady=2)
 
         table = ttk.Frame(body)
-        table.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        table.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(8, 0))
         ttk.Label(table, text="Source dBm").grid(row=0, column=0, sticky="w", padx=(0, 12))
         ttk.Label(table, text="Measured dBFS").grid(row=0, column=1, sticky="w", padx=(0, 12))
         for row, level in enumerate(self.LEVELS_DBM, start=1):
@@ -1841,7 +1944,7 @@ class RtlCalibrationDialog(tk.Toplevel):
             )
 
         ttk.Label(body, textvariable=self.status_var, foreground="red", wraplength=360).grid(
-            row=2, column=0, columnspan=3, sticky="ew", pady=(8, 0)
+            row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0)
         )
         buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         buttons.grid(row=1, column=0, sticky="ew")
@@ -1853,21 +1956,38 @@ class RtlCalibrationDialog(tk.Toplevel):
     def frequency_hz(self) -> int:
         return int(round(float(self.frequency_var.get()) * 1_000_000))
 
+    def sample_rate_hz(self) -> int:
+        return int(round(float(self.sample_rate_var.get()) * 1000))
+
+    def gain_text(self) -> str:
+        return normalize_rtl_gain(self.gain_var.get())
+
     def load_frequency(self) -> None:
         try:
-            calibration = load_rtl_calibration(self.app.config_path, self.frequency_hz())
+            calibration = load_rtl_calibration(
+                self.app.config_path,
+                self.frequency_hz(),
+                self.sample_rate_hz(),
+                self.gain_text(),
+            )
         except ValueError:
-            self.status_var.set("Frequency must be numeric MHz.")
+            self.status_var.set("Frequency, sample rate, and gain must be valid.")
             return
         for level in self.LEVELS_DBM:
             value = calibration.points_dbfs_by_dbm.get(level)
             self.level_vars[level].set(f"{value:0.2f}" if value is not None else "--")
-        self.status_var.set(f"Loaded calibration for {calibration.frequency_hz / 1_000_000:0.1f} MHz.")
+        self.status_var.set(
+            f"Loaded calibration for {calibration.frequency_hz / 1_000_000:0.1f} MHz, "
+            f"{calibration.sample_rate_hz / 1000:0.0f} ksps, gain {calibration.gain_db}."
+        )
 
     def capture_level(self, level_dbm: int) -> None:
         power = self.app.power_panel.latest_power_dbfs
         if power is None:
             self.status_var.set("Start RTL power and wait for a reading before capture.")
+            return
+        if self.app.power_panel.is_warming():
+            self.status_var.set("RTL power meter is still warming; wait for Ready before capture.")
             return
         self.level_vars[level_dbm].set(f"{power:0.2f}")
         self.status_var.set(f"Captured {level_dbm:d} dBm as {power:0.2f} dBFS.")
@@ -1875,18 +1995,32 @@ class RtlCalibrationDialog(tk.Toplevel):
     def save(self) -> None:
         try:
             frequency_hz = self.frequency_hz()
+            sample_rate_hz = self.sample_rate_hz()
+            gain_db = self.gain_text()
             points = self.points_from_fields()
         except ValueError as exc:
             self.status_var.set(str(exc))
             return
-        if not points:
-            self.status_var.set("Capture at least one calibration point before saving.")
+        if len(points) < 2:
+            self.status_var.set("Capture at least two calibration points before saving.")
+            return
+        if gain_db == "auto":
+            self.status_var.set("Use a fixed numeric RTL gain before saving calibration.")
             return
         save_rtl_calibration(
             self.app.config_path,
-            RtlCalibration(frequency_hz=frequency_hz, points_dbfs_by_dbm=points),
+            RtlCalibration(
+                frequency_hz=frequency_hz,
+                sample_rate_hz=sample_rate_hz,
+                gain_db=gain_db,
+                points_dbfs_by_dbm=points,
+            ),
         )
-        self.status_var.set(f"Saved {len(points)} points at {frequency_hz / 1_000_000:0.1f} MHz.")
+        self.app.power_panel.active_calibration = self.app.power_panel.load_active_calibration(self.app.power_config)
+        self.status_var.set(
+            f"Saved {len(points)} points at {frequency_hz / 1_000_000:0.1f} MHz, "
+            f"{sample_rate_hz / 1000:0.0f} ksps, gain {gain_db}."
+        )
 
     def points_from_fields(self) -> dict[int, float]:
         points: dict[int, float] = {}
@@ -2012,9 +2146,9 @@ class ScanGraphDialog(tk.Toplevel):
         height = int(canvas["height"])
         left, right, top, bottom = 55, width - 20, 20, height - 45
         scan_points = [
-            (float(row["offset_degrees"]), float(row["power_dbfs"]))
+            (float(row["offset_degrees"]), float(row.get("power_value", row["power_dbfs"])))
             for row in rows
-            if row.get("power_dbfs") is not None
+            if row.get("power_value", row.get("power_dbfs")) is not None
         ]
         if not scan_points:
             canvas.create_text(width / 2, height / 2, text="No scan data")
@@ -2041,7 +2175,8 @@ class ScanGraphDialog(tk.Toplevel):
         canvas.create_line(left, bottom, right, bottom)
         canvas.create_line(left, top, left, bottom)
         canvas.create_text((left + right) / 2, height - 15, text=f"{axis_label(axis)} offset degrees")
-        canvas.create_text(18, (top + bottom) / 2, text="dBFS", angle=90)
+        power_unit = next((str(row.get("power_unit", "dBFS")) for row in rows if row.get("power_value", row.get("power_dbfs")) is not None), "dBFS")
+        canvas.create_text(18, (top + bottom) / 2, text=power_unit, angle=90)
         self.draw_boresight(canvas, left, right, top, bottom, min_x, max_x)
 
         if fit_points:
@@ -2054,7 +2189,7 @@ class ScanGraphDialog(tk.Toplevel):
             fwhm = 2.35482 * fit["sigma"]
             self.summary_var.set(
                 f"Fit centre {fit['center']:+0.3f} deg, FWHM {fwhm:0.3f} deg, "
-                f"peak {fit['peak']:0.2f} dBFS, RMS {fit['rms']:0.3f} dB"
+                f"peak {fit['peak']:0.2f} {power_unit}, RMS {fit['rms']:0.3f} dB"
             )
         else:
             self.summary_var.set("Fit unavailable")
@@ -2549,13 +2684,15 @@ class WT4App(tk.Tk):
         antenna_name: str,
         scan_number: int,
     ) -> dict[str, object]:
-        powers: list[float] = []
+        measurements: list[dict[str, object]] = []
         end_time = time.monotonic() + dwell_seconds
         while not self.scan_stop_event.is_set() and time.monotonic() < end_time:
-            power = self.power_panel.latest_power_dbfs
-            if power is not None:
-                powers.append(power)
+            measurement = self.power_panel.current_power_measurement()
+            if measurement is not None:
+                measurements.append(measurement)
             time.sleep(0.1)
+        power_unit = str(measurements[-1]["power_unit"]) if measurements else "dBFS"
+        calibrated = bool(measurements[-1]["power_calibrated"]) if measurements else False
         now_local = datetime.now().astimezone()
         row: dict[str, object] = {
             "local_time": now_local.isoformat(timespec="milliseconds"),
@@ -2567,8 +2704,20 @@ class WT4App(tk.Tk):
             "nominal_el": nominal.elevation,
             "target_az": target.azimuth,
             "target_el": target.elevation,
-            "power_dbfs": sum(powers) / len(powers) if powers else None,
-            "sample_count": len(powers),
+            "power_dbfs": (
+                sum(float(measurement["power_dbfs"]) for measurement in measurements) / len(measurements)
+                if measurements
+                else None
+            ),
+            "power_value": (
+                sum(float(measurement["power_value"]) for measurement in measurements) / len(measurements)
+                if measurements
+                else None
+            ),
+            "power_unit": power_unit,
+            "power_calibrated": calibrated,
+            "power_extrapolated": any(bool(measurement["power_extrapolated"]) for measurement in measurements),
+            "sample_count": len(measurements),
         }
         for name, panel in self.panels.items():
             position = panel.session.last_position if panel.session else None
@@ -2581,12 +2730,14 @@ class WT4App(tk.Tk):
     def average_scan_rows(self, rows: list[dict[str, object]], offsets: list[float]) -> list[dict[str, object]]:
         averaged: list[dict[str, object]] = []
         for offset in offsets:
-            matching = [row for row in rows if row.get("power_dbfs") is not None and float(row["offset_degrees"]) == offset]
+            matching = [row for row in rows if row.get("power_value") is not None and float(row["offset_degrees"]) == offset]
             if not matching:
                 continue
-            power = sum(float(row["power_dbfs"]) for row in matching) / len(matching)
             template = dict(matching[-1])
-            template["power_dbfs"] = power
+            template["power_dbfs"] = sum(float(row["power_dbfs"]) for row in matching) / len(matching)
+            template["power_value"] = sum(float(row["power_value"]) for row in matching) / len(matching)
+            template["power_calibrated"] = all(bool(row.get("power_calibrated")) for row in matching)
+            template["power_extrapolated"] = any(bool(row.get("power_extrapolated")) for row in matching)
             template["sample_count"] = sum(int(row.get("sample_count", 0)) for row in matching)
             template["scan_number"] = "avg"
             averaged.append(template)
