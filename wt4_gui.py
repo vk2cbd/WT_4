@@ -44,7 +44,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.5"
+APP_VERSION = "v4.6"
 
 
 class EventLogger:
@@ -2884,8 +2884,12 @@ class WT4App(tk.Tk):
         self.scan_thread.start()
 
     def stop_scan(self) -> None:
+        if not self.scan_active and not (self.scan_thread and self.scan_thread.is_alive()):
+            self.set_scan_offset(None)
+            if self.scan_dialog and self.scan_dialog.winfo_exists():
+                self.scan_dialog.set_status("No scan is running.")
+            return
         self.scan_stop_event.set()
-        self.scan_active = False
         self.set_scan_offset(None)
         self.event_log.info("SCAN_STOP")
         if self.scan_dialog and self.scan_dialog.winfo_exists():
@@ -2943,16 +2947,29 @@ class WT4App(tk.Tk):
                         target_az=target.azimuth,
                         target_el=target.elevation,
                     )
-                    self.slew_all_to_target(nominal, nominal.name[:8].upper(), show_slewing=False)
+                    self.slew_all_to_target(
+                        nominal,
+                        nominal.name[:8].upper(),
+                        show_slewing=False,
+                        stop_event=self.scan_stop_event,
+                    )
+                    if self.scan_stop_event.is_set():
+                        break
                     row = self.collect_scan_point(axis, offset, config.dwell_seconds, nominal, target, config.antenna_name, scan_number)
                     rows.append(row)
+            stopped = self.scan_stop_event.is_set()
             averaged_rows = self.average_scan_rows(rows, offsets)
-            self.write_scan_csv(csv_path, rows, averaged_rows)
+            if not stopped:
+                self.write_scan_csv(csv_path, rows, averaged_rows)
             self.set_scan_offset(None)
             if self.tracking_kind and not self.tracking_stop_event.is_set():
                 target = self.current_tracking_target(self.tracking_kind)
                 self.slew_all_to_target(target, target.name[:8].upper(), show_slewing=False)
-            if averaged_rows:
+            if stopped:
+                self.event_log.info("SCAN_STOPPED", antenna=config.antenna_name, axis=axis_label(axis))
+                self.events.put(("ok", dialog.set_status, "Scan stopped; tracking source."))
+                self.events.put(("ok", self.set_status, "Scan stopped; tracking source."))
+            elif averaged_rows:
                 self.event_log.info("SCAN_COMPLETE", antenna=config.antenna_name, axis=axis_label(axis), csv=str(csv_path))
                 self.events.put(("ok", lambda _unused: ScanGraphDialog(self, axis, averaged_rows, csv_path, config.antenna_name), None))
                 self.events.put(("ok", dialog.set_status, f"Scan complete: {csv_path}"))
@@ -3041,7 +3058,7 @@ class WT4App(tk.Tk):
         self.set_scan_offset(config.antenna_name, axis, start_offset)
         if self.tracking_kind and not self.scan_stop_event.is_set():
             target = self.current_tracking_target(self.tracking_kind)
-            self.slew_all_to_target(target, target.name[:8].upper(), show_slewing=False)
+            self.slew_all_to_target(target, target.name[:8].upper(), show_slewing=False, stop_event=self.scan_stop_event)
 
     def write_scan_csv(self, csv_path: Path, rows: list[dict[str, object]], averaged_rows: list[dict[str, object]]) -> None:
         if not rows:
@@ -3358,14 +3375,27 @@ class WT4App(tk.Tk):
         hours, minutes = divmod(total_minutes, 60)
         return f"{sign}{hours:02d}:{minutes:02d}"
 
-    def slew_all_to_target(self, target: TargetPosition, mode: str, show_slewing: bool = True) -> TargetPosition:
+    def slew_all_to_target(
+        self,
+        target: TargetPosition,
+        mode: str,
+        show_slewing: bool = True,
+        stop_event: Optional[threading.Event] = None,
+    ) -> TargetPosition:
         with self.motion_lock:
-            return self._slew_all_to_target(target, mode, show_slewing)
+            return self._slew_all_to_target(target, mode, show_slewing, stop_event or self.tracking_stop_event)
 
-    def _slew_all_to_target(self, target: TargetPosition, mode: str, show_slewing: bool = True) -> TargetPosition:
+    def _slew_all_to_target(
+        self,
+        target: TargetPosition,
+        mode: str,
+        show_slewing: bool = True,
+        stop_event: Optional[threading.Event] = None,
+    ) -> TargetPosition:
         errors: list[str] = []
         threads: list[threading.Thread] = []
         lock = threading.Lock()
+        active_stop_event = stop_event or self.tracking_stop_event
 
         def make_worker(name: str, session: SafeAntenna, panel: AntennaPanel):
             activity = self.oled_activity_for_antenna(name, "SLEWING" if show_slewing else "TRACKING")
@@ -3395,7 +3425,7 @@ class WT4App(tk.Tk):
                         effective_target.elevation,
                         session.config.az_track_speed,
                         session.config.el_track_speed,
-                        self.tracking_stop_event,
+                        active_stop_event,
                         self.az_tracking_start_tolerance(),
                         self.el_tracking_start_tolerance(),
                         self.az_tracking_stop_tolerance(),
@@ -3406,7 +3436,7 @@ class WT4App(tk.Tk):
                         self.site.el_slow_threshold_degrees,
                         progress,
                     )
-                    if self.tracking_stop_event.is_set():
+                    if active_stop_event.is_set():
                         session.update_oled(mode, effective_target.azimuth, effective_target.elevation, "STOPPED")
                         self.events.put(("position", panel.update_position, position))
                         self.events.put(("ok", panel.set_tracking_status, "STOPPED"))
@@ -3463,7 +3493,7 @@ class WT4App(tk.Tk):
         for thread in threads:
             thread.join()
         if errors:
-            self.tracking_stop_event.set()
+            active_stop_event.set()
             raise RuntimeError("; ".join(errors))
         return target
 
