@@ -2905,7 +2905,7 @@ class WT4App(tk.Tk):
     def scan_worker(self, axis: Axis, config: ScanConfig, dialog: ScanCalibrationDialog) -> None:
         rows: list[dict[str, object]] = []
         averaged_rows: list[dict[str, object]] = []
-        scan_dir = Path(self.config_path).parent / "Scan Cal"
+        scan_dir = Path(self.config_path).parent / "scan"
         scan_dir.mkdir(parents=True, exist_ok=True)
         csv_path = scan_dir / f"wt4_scan_{config.antenna_name.lower()}_{axis_label(axis).lower()}_{datetime.now():%Y%m%d-%H%M%S}.csv"
         try:
