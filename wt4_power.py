@@ -116,7 +116,7 @@ class RtlSdrDevice:
     def configure(self, config: PowerMeterConfig) -> None:
         config.validate()
         self._check(self._lib.rtlsdr_set_sample_rate(self._dev, ctypes.c_uint32(config.sample_rate_hz)), "set sample rate")
-        if hasattr(self._lib, "rtlsdr_set_freq_correction"):
+        if config.frequency_correction_ppm and hasattr(self._lib, "rtlsdr_set_freq_correction"):
             self._check(
                 self._lib.rtlsdr_set_freq_correction(self._dev, ctypes.c_int(config.frequency_correction_ppm)),
                 "set frequency correction",
