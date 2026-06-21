@@ -39,12 +39,12 @@ from wt4_config import (
     save_site_config,
     save_sources,
 )
-from wt4_driver import AntennaConfig, Axis, Direction, EncoderInfo, Position, SafeAntenna, shortest_angle_delta
+from wt4_driver import AntennaConfig, Axis, Direction, EncoderInfo, Position, SafeAntenna, SafetyError, shortest_angle_delta
 from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.4"
+APP_VERSION = "v4.5"
 
 
 class EventLogger:
@@ -3425,6 +3425,25 @@ class WT4App(tk.Tk):
                         target_az=effective_target.azimuth,
                         target_el=effective_target.elevation,
                     )
+                except SafetyError as exc:
+                    self.event_log.error("SLEW_SAFETY_STOP", antenna=name, mode=mode, error=str(exc))
+                    try:
+                        session.stop_all()
+                        position = session.read_position()
+                        session.update_oled(mode, effective_target.azimuth, effective_target.elevation, "STOPPED")
+                        self.events.put(("position", panel.update_position, position))
+                        self.events.put(("error", panel.set_fault, str(exc)))
+                    except Exception as comm_exc:
+                        self.event_log.error(
+                            "SLEW_SAFETY_STOP_OFFLINE",
+                            antenna=name,
+                            mode=mode,
+                            error=str(exc),
+                            communication_error=str(comm_exc),
+                        )
+                        self.events.put(("ok", self.handle_controller_fault_event, (name, str(comm_exc))))
+                    with lock:
+                        errors.append(f"{name}: {exc}")
                 except Exception as exc:
                     self.event_log.error("SLEW_FAULT", antenna=name, mode=mode, error=str(exc))
                     self.events.put(("ok", self.handle_controller_fault_event, (name, str(exc))))
