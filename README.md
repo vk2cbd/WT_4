@@ -359,7 +359,9 @@ WT4 includes guarded target tracking:
 - AZ and EL are allowed to slew concurrently on each antenna.
 - Observer latitude/longitude are edited with `Observer`.
 - Named RA/Dec radio sources are edited and selected with `Sources`.
-- `Interval`, AZ/EL start tolerance, AZ/EL stop tolerance, AZ/EL slow speed, AZ/EL slow deg, AZ/EL tracking speed, and `Max jog` are edited with `Tracking`.
+- `Interval`, AZ/EL start tolerance, AZ/EL stop tolerance, AZ/EL slow speed,
+  AZ/EL slow deg, AZ/EL tracking speed, `Max jog`, AZ low-to-high
+  compensation, and event-log retention are edited with `Tracking`.
 - The main screen shows one shared target AZ/EL; the OLED displays use the
   same shared target values.
 - Sun and Moon AZ/EL are shown continuously as reference positions, even when
@@ -375,7 +377,14 @@ Each antenna has separate AZ and EL tracking speeds:
 ```ini
 az_track_speed = 40
 el_track_speed = 40
+az_low_to_high_compensation = 0.500
 ```
+
+`az_low_to_high_compensation` is an antenna-specific hysteresis correction used
+when WT4 needs to drive AZ from low-to-high/increasing azimuth. The configured
+value is added to that antenna's effective AZ target for that move, then logged
+as `AZ_HYSTERESIS_COMP_APPLIED`. This keeps the normal encoder calibration
+offset unchanged while compensating for approach-direction hysteresis.
 
 Each axis also has its own tracking tolerance and slow-rate settings:
 
@@ -408,6 +417,21 @@ tolerance is limited to +/-0.01..0.20 degrees in 0.01 degree steps. A negative
 start tolerance leads the target on that axis by that amount. Each stop
 tolerance is limited to +/-0.01 degrees up to the absolute value of the matching
 start tolerance.
+
+## Event Log
+
+WT4 writes an always-on diagnostic event log under `logs/` next to the config
+file. Log files are daily JSON-lines files named like:
+
+```text
+logs/wt4_2026-06-21.log
+```
+
+The `Tracking` dialog includes `Log retention days`; WT4 deletes older daily log
+files at startup and when tracking settings are saved. The log records app
+start/stop, connection attempts, controller offline faults, tracking and scan
+events, slew start/end/faults, hysteresis compensation, RTL power start/stop,
+RTL calibration saves, and calibration offset changes.
 
 Use low speed for the first tests and confirm the displayed target AZ/EL is
 reasonable before allowing larger slews.

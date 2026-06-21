@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 import queue
 import threading
@@ -43,7 +44,56 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.3"
+APP_VERSION = "v4.4"
+
+
+class EventLogger:
+    LEVELS = {"DEBUG": 10, "INFO": 20, "WARN": 30, "ERROR": 40}
+
+    def __init__(self, base_dir: Path, retention_days: int = 14, level: str = "INFO") -> None:
+        self.log_dir = base_dir / "logs"
+        self.retention_days = max(1, int(retention_days))
+        self.level = level.upper() if level.upper() in self.LEVELS else "INFO"
+        self.lock = threading.Lock()
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.cleanup_old_logs()
+
+    def cleanup_old_logs(self) -> None:
+        cutoff = time.time() - self.retention_days * 86400
+        for path in self.log_dir.glob("wt4_*.log"):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                pass
+
+    def log(self, level: str, event: str, **fields: object) -> None:
+        level = level.upper()
+        if self.LEVELS.get(level, 100) < self.LEVELS.get(self.level, 20):
+            return
+        now = datetime.now().astimezone()
+        record = {
+            "time": now.isoformat(timespec="milliseconds"),
+            "level": level,
+            "event": event,
+            **fields,
+        }
+        path = self.log_dir / f"wt4_{now:%Y-%m-%d}.log"
+        with self.lock:
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+
+    def debug(self, event: str, **fields: object) -> None:
+        self.log("DEBUG", event, **fields)
+
+    def info(self, event: str, **fields: object) -> None:
+        self.log("INFO", event, **fields)
+
+    def warn(self, event: str, **fields: object) -> None:
+        self.log("WARN", event, **fields)
+
+    def error(self, event: str, **fields: object) -> None:
+        self.log("ERROR", event, **fields)
 
 
 def axis_label(axis: Axis) -> str:
@@ -258,6 +308,8 @@ class ObserverDialog(tk.Toplevel):
                 el_slow_speed=self.app.site.el_slow_speed,
                 az_slow_threshold_degrees=self.app.site.az_slow_threshold_degrees,
                 el_slow_threshold_degrees=self.app.site.el_slow_threshold_degrees,
+                log_retention_days=self.app.site.log_retention_days,
+                log_level=self.app.site.log_level,
             )
             self.app.validate_observer(site)
         except ValueError:
@@ -579,6 +631,15 @@ class CalibrationDialog(tk.Toplevel):
         def work() -> Position:
             position = panel.session.calibrate(actual_az, actual_el)
             self.app.save_config("Calibration saved.")
+            self.app.event_log.info(
+                "CALIBRATION_SAVE",
+                antenna=name,
+                method="manual_or_target",
+                actual_az=actual_az,
+                actual_el=actual_el,
+                az_offset=panel.session.config.calibration.az_offset,
+                el_offset=panel.session.config.calibration.el_offset,
+            )
             panel.session.update_oled("CAL", activity="STOPPED")
             return position
 
@@ -609,6 +670,12 @@ class CalibrationDialog(tk.Toplevel):
             config.calibration.az_offset = az_offset
             config.calibration.el_offset = el_offset
             self.app.save_config("Calibration offsets saved.")
+            self.app.event_log.info(
+                "CALIBRATION_OFFSET_APPLY",
+                antenna=name,
+                az_offset=az_offset,
+                el_offset=el_offset,
+            )
             if panel and panel.session:
                 with panel.session.lock:
                     position = panel.session.read_position_locked()
@@ -988,6 +1055,16 @@ class PeakCalibrationDialog(tk.Toplevel):
             new_offset = (
                 session.config.calibration.az_offset if axis == Axis.AZIMUTH else session.config.calibration.el_offset
             )
+            self.app.event_log.info(
+                "PEAK_CAL_LOCK",
+                antenna=self.antenna_var.get(),
+                axis=axis_label(axis),
+                target=target.name,
+                target_az=target.azimuth,
+                target_el=target.elevation,
+                old_offset=old_offset,
+                new_offset=new_offset,
+            )
             return position, target, old_offset, new_offset
 
         self.app.run_worker(
@@ -1169,7 +1246,9 @@ class TrackingDialog(tk.Toplevel):
         self.az_speed_vars: dict[str, tk.StringVar] = {}
         self.el_speed_vars: dict[str, tk.StringVar] = {}
         self.max_jog_vars: dict[str, tk.StringVar] = {}
+        self.az_lh_comp_vars: dict[str, tk.StringVar] = {}
         self.interval_var = tk.StringVar(value=f"{app.site.track_interval_seconds:0.1f}")
+        self.log_retention_var = tk.StringVar(value=str(app.site.log_retention_days))
         self.az_tolerance_var = tk.StringVar(value=f"{app.site.az_track_tolerance_degrees:0.2f}")
         self.el_tolerance_var = tk.StringVar(value=f"{app.site.el_track_tolerance_degrees:0.2f}")
         self.az_stop_tolerance_var = tk.StringVar(value=f"{app.site.az_stop_tolerance_degrees:0.2f}")
@@ -1182,37 +1261,41 @@ class TrackingDialog(tk.Toplevel):
         body = ttk.Frame(self, padding=10)
         body.grid(row=0, column=0, sticky="nsew")
         self._spin_field(body, "Interval sec", self.interval_var, 0, 0.1, 10.0, 0.1, width=7)
+        self._spin_field(body, "Log retention days", self.log_retention_var, 1, 1, 365, 1, width=7)
 
-        ttk.Separator(body, orient="horizontal").grid(row=1, column=0, columnspan=5, sticky="ew", pady=8)
-        ttk.Label(body, text="Axis").grid(row=2, column=0, sticky="w")
-        ttk.Label(body, text="Start tol").grid(row=2, column=1, sticky="w")
-        ttk.Label(body, text="Stop tol").grid(row=2, column=2, sticky="w")
-        ttk.Label(body, text="Slow speed").grid(row=2, column=3, sticky="w")
-        ttk.Label(body, text="Slow deg").grid(row=2, column=4, sticky="w")
-        ttk.Label(body, text="AZ").grid(row=3, column=0, sticky="w", pady=2)
-        self._spin_only(body, self.az_tolerance_var, 3, 1, -0.20, 0.20, 0.01, width=7)
-        self._spin_only(body, self.az_stop_tolerance_var, 3, 2, -0.20, 0.20, 0.01, width=7)
-        ttk.Entry(body, textvariable=self.az_slow_speed_var, width=7).grid(row=3, column=3, sticky="w", pady=2)
-        ttk.Entry(body, textvariable=self.az_slow_threshold_var, width=7).grid(row=3, column=4, sticky="w", pady=2)
-        ttk.Label(body, text="EL").grid(row=4, column=0, sticky="w", pady=2)
-        self._spin_only(body, self.el_tolerance_var, 4, 1, -0.20, 0.20, 0.01, width=7)
-        self._spin_only(body, self.el_stop_tolerance_var, 4, 2, -0.20, 0.20, 0.01, width=7)
-        ttk.Entry(body, textvariable=self.el_slow_speed_var, width=7).grid(row=4, column=3, sticky="w", pady=2)
-        ttk.Entry(body, textvariable=self.el_slow_threshold_var, width=7).grid(row=4, column=4, sticky="w", pady=2)
+        ttk.Separator(body, orient="horizontal").grid(row=2, column=0, columnspan=5, sticky="ew", pady=8)
+        ttk.Label(body, text="Axis").grid(row=3, column=0, sticky="w")
+        ttk.Label(body, text="Start tol").grid(row=3, column=1, sticky="w")
+        ttk.Label(body, text="Stop tol").grid(row=3, column=2, sticky="w")
+        ttk.Label(body, text="Slow speed").grid(row=3, column=3, sticky="w")
+        ttk.Label(body, text="Slow deg").grid(row=3, column=4, sticky="w")
+        ttk.Label(body, text="AZ").grid(row=4, column=0, sticky="w", pady=2)
+        self._spin_only(body, self.az_tolerance_var, 4, 1, -0.20, 0.20, 0.01, width=7)
+        self._spin_only(body, self.az_stop_tolerance_var, 4, 2, -0.20, 0.20, 0.01, width=7)
+        ttk.Entry(body, textvariable=self.az_slow_speed_var, width=7).grid(row=4, column=3, sticky="w", pady=2)
+        ttk.Entry(body, textvariable=self.az_slow_threshold_var, width=7).grid(row=4, column=4, sticky="w", pady=2)
+        ttk.Label(body, text="EL").grid(row=5, column=0, sticky="w", pady=2)
+        self._spin_only(body, self.el_tolerance_var, 5, 1, -0.20, 0.20, 0.01, width=7)
+        self._spin_only(body, self.el_stop_tolerance_var, 5, 2, -0.20, 0.20, 0.01, width=7)
+        ttk.Entry(body, textvariable=self.el_slow_speed_var, width=7).grid(row=5, column=3, sticky="w", pady=2)
+        ttk.Entry(body, textvariable=self.el_slow_threshold_var, width=7).grid(row=5, column=4, sticky="w", pady=2)
 
-        ttk.Separator(body, orient="horizontal").grid(row=5, column=0, columnspan=5, sticky="ew", pady=8)
-        ttk.Label(body, text="Antenna").grid(row=6, column=0, sticky="w")
-        ttk.Label(body, text="AZ speed").grid(row=6, column=1, sticky="w")
-        ttk.Label(body, text="EL speed").grid(row=6, column=2, sticky="w")
-        ttk.Label(body, text="Max jog").grid(row=6, column=3, sticky="w")
-        for row, (name, config) in enumerate(self.app.configs.items(), start=7):
+        ttk.Separator(body, orient="horizontal").grid(row=6, column=0, columnspan=5, sticky="ew", pady=8)
+        ttk.Label(body, text="Antenna").grid(row=7, column=0, sticky="w")
+        ttk.Label(body, text="AZ speed").grid(row=7, column=1, sticky="w")
+        ttk.Label(body, text="EL speed").grid(row=7, column=2, sticky="w")
+        ttk.Label(body, text="Max jog").grid(row=7, column=3, sticky="w")
+        ttk.Label(body, text="AZ L->H comp").grid(row=7, column=4, sticky="w")
+        for row, (name, config) in enumerate(self.app.configs.items(), start=8):
             self.az_speed_vars[name] = tk.StringVar(value=str(config.az_track_speed))
             self.el_speed_vars[name] = tk.StringVar(value=str(config.el_track_speed))
             self.max_jog_vars[name] = tk.StringVar(value=f"{config.limits.max_jog_seconds:0.0f}")
+            self.az_lh_comp_vars[name] = tk.StringVar(value=f"{config.az_low_to_high_compensation:0.2f}")
             ttk.Label(body, text=name).grid(row=row, column=0, sticky="w", pady=2)
             ttk.Entry(body, textvariable=self.az_speed_vars[name], width=7).grid(row=row, column=1, sticky="w", pady=2)
             ttk.Entry(body, textvariable=self.el_speed_vars[name], width=7).grid(row=row, column=2, sticky="w", pady=2)
             ttk.Entry(body, textvariable=self.max_jog_vars[name], width=7).grid(row=row, column=3, sticky="w", pady=2)
+            ttk.Entry(body, textvariable=self.az_lh_comp_vars[name], width=9).grid(row=row, column=4, sticky="w", pady=2)
 
         buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         buttons.grid(row=1, column=0, sticky="ew")
@@ -1282,6 +1365,8 @@ class TrackingDialog(tk.Toplevel):
                 el_slow_speed=int(self.el_slow_speed_var.get()),
                 az_slow_threshold_degrees=round(float(self.az_slow_threshold_var.get()), 1),
                 el_slow_threshold_degrees=round(float(self.el_slow_threshold_var.get()), 1),
+                log_retention_days=int(float(self.log_retention_var.get())),
+                log_level=self.app.site.log_level,
             )
             self.app.validate_site(site)
             antenna_values = {
@@ -1289,6 +1374,7 @@ class TrackingDialog(tk.Toplevel):
                     int(self.az_speed_vars[name].get()),
                     int(self.el_speed_vars[name].get()),
                     float(self.max_jog_vars[name].get()),
+                    float(self.az_lh_comp_vars[name].get()),
                 )
                 for name in self.app.configs
             }
@@ -1301,18 +1387,19 @@ class TrackingDialog(tk.Toplevel):
             return
 
         self.app.site = site
-        for name, (az_speed, el_speed, max_jog) in antenna_values.items():
+        for name, (az_speed, el_speed, max_jog, az_lh_comp) in antenna_values.items():
             config = self.app.configs[name]
             config.az_track_speed = az_speed
             config.el_track_speed = el_speed
             config.limits.max_jog_seconds = max_jog
+            config.az_low_to_high_compensation = az_lh_comp
             if name in self.app.panels:
                 self.app.panels[name].sync_config_settings()
         self.app.save_tracking_and_config("Tracking saved.")
         self.destroy()
 
-    def _validate_antennas(self, values: dict[str, tuple[int, int, float]], site: SiteConfig) -> None:
-        for name, (az_speed, el_speed, max_jog) in values.items():
+    def _validate_antennas(self, values: dict[str, tuple[int, int, float, float]], site: SiteConfig) -> None:
+        for name, (az_speed, el_speed, max_jog, az_lh_comp) in values.items():
             if not (1 <= az_speed <= 100 and 1 <= el_speed <= 100):
                 raise RuntimeError(f"{name}: AZ and EL speeds must be 1..100.")
             if site.az_slow_speed >= az_speed:
@@ -1321,6 +1408,8 @@ class TrackingDialog(tk.Toplevel):
                 raise RuntimeError(f"{name}: EL slow speed must be lower than EL speed.")
             if not (1.0 <= max_jog <= 600.0):
                 raise RuntimeError(f"{name}: max jog must be 1..600 seconds.")
+            if not (-5.0 <= az_lh_comp <= 5.0):
+                raise RuntimeError(f"{name}: AZ L->H compensation must be -5..5 degrees.")
 
 
 class AntennaPanel(ttk.Frame):
@@ -1767,6 +1856,15 @@ class PowerMeterPanel(ttk.LabelFrame):
         self.stats_var.set("Avg -- Min -- Max --")
         self.stop_event.clear()
         self.status_var.set(f"Starting... {config.samples_per_update} samples/read")
+        self.app.event_log.info(
+            "RTL_POWER_START",
+            frequency_hz=power_config.center_frequency_hz,
+            sample_rate_hz=power_config.sample_rate_hz,
+            gain=power_config.gain_db,
+            samples_per_read=power_config.samples_per_read,
+            update_rate_hz=power_config.update_rate_hz,
+            calibrated=bool(self.active_calibration),
+        )
         self.thread = threading.Thread(target=self.power_loop, args=(config,), daemon=True)
         self.thread.start()
 
@@ -1781,6 +1879,7 @@ class PowerMeterPanel(ttk.LabelFrame):
             self.thread = None
             self.meter = None
             self.status_var.set("Stopped")
+        self.app.event_log.info("RTL_POWER_STOP")
 
     def power_loop(self, config: PowerMeterConfig) -> None:
         try:
@@ -2020,6 +2119,13 @@ class RtlCalibrationDialog(tk.Toplevel):
             ),
         )
         self.app.power_panel.active_calibration = self.app.power_panel.load_active_calibration(self.app.power_config)
+        self.app.event_log.info(
+            "RTL_CAL_SAVE",
+            frequency_hz=frequency_hz,
+            sample_rate_hz=sample_rate_hz,
+            gain=gain_db,
+            points=len(points),
+        )
         self.status_var.set(
             f"Saved {len(points)} points at {frequency_hz / 1_000_000:0.1f} MHz, "
             f"{sample_rate_hz / 1000:0.0f} ksps, gain {gain_db}."
@@ -2378,6 +2484,8 @@ class WT4App(tk.Tk):
         self.sources = load_sources(config_path)
         self.power_config = load_power_config(config_path)
         self.scan_config = load_scan_config(config_path)
+        self.event_log = EventLogger(Path(config_path).parent, self.site.log_retention_days, self.site.log_level)
+        self.event_log.info("APP_START", version=APP_VERSION, config=str(config_path))
         self.sessions: dict[str, SafeAntenna] = {}
         self.events: queue.Queue[tuple[str, object, object]] = queue.Queue()
         self.connecting_active = False
@@ -2494,6 +2602,7 @@ class WT4App(tk.Tk):
                 panel.status_var.set("CONNECTING")
                 panel.fault_var.set("")
         self.status_var.set(f"Connecting {len(pending)} antenna(s)...")
+        self.event_log.info("CONNECT_START", antennas=[name for name, _config in pending])
         self.run_worker(lambda: self.connect_sessions_parallel(pending), self.finish_connect_all, self.finish_connect_fault)
 
     def connect_session(self, config) -> SafeAntenna:
@@ -2525,6 +2634,7 @@ class WT4App(tk.Tk):
                     return
                 except Exception as exc:
                     last_error = str(exc)
+                    self.event_log.warn("CONNECT_ATTEMPT_FAIL", antenna=name, attempt=attempt, error=last_error)
                     if attempt < 3:
                         time.sleep(max(1.0, config.open_delay * 0.5))
             with lock:
@@ -2542,6 +2652,7 @@ class WT4App(tk.Tk):
         connected_sessions, errors = result
         for name, session in connected_sessions:
             self.attach_session(name, session, update_status=False)
+            self.event_log.info("CONNECT_OK", antenna=name)
         if connected_sessions:
             self.run_worker(
                 lambda names=[name for name, _session in connected_sessions]: self.refresh_connected_oled(names),
@@ -2550,6 +2661,7 @@ class WT4App(tk.Tk):
             )
         for error in errors:
             name = error.split(":", 1)[0]
+            self.event_log.error("CONNECT_FAIL", antenna=name, error=error)
             panel = self.panels.get(name)
             if panel:
                 panel.detach("DISCONNECTED", error)
@@ -2562,6 +2674,7 @@ class WT4App(tk.Tk):
 
     def finish_connect_fault(self, text: str) -> None:
         self.connecting_active = False
+        self.event_log.error("CONNECT_FAULT", error=text)
         self.status_var.set(f"Connect fault: {text}")
 
     def refresh_connected_oled(self, names: list[str]) -> None:
@@ -2588,6 +2701,7 @@ class WT4App(tk.Tk):
             return
         for panel in self.panels.values():
             panel.stop_event.set()
+        self.event_log.info("DISCONNECT_START", antennas=list(self.sessions))
         for name, session in list(self.sessions.items()):
             self.run_worker(
                 lambda s=session: s.close(),
@@ -2606,6 +2720,7 @@ class WT4App(tk.Tk):
             self.status_var.set(f"Stopped. Connected {connected}/{total} antennas.")
         else:
             self.status_var.set("Disconnected.")
+        self.event_log.info("DISCONNECT_OK", antenna=name, connected=connected, total=total)
 
     def handle_controller_fault(self, name: str, message: str) -> None:
         session = self.sessions.pop(name, None)
@@ -2623,6 +2738,7 @@ class WT4App(tk.Tk):
         self.parking_active = False
         self.set_scan_offset(None)
         self.status_var.set(f"{name} controller offline: {message}")
+        self.event_log.error("CONTROLLER_OFFLINE", antenna=name, error=message)
 
         self.run_worker(lambda s=session: s.close(), lambda _result: None, lambda _text: None)
         for other_name, other_session in list(self.sessions.items()):
@@ -2670,6 +2786,7 @@ class WT4App(tk.Tk):
 
     def finish_controller_health_fault(self, message: str) -> None:
         self.health_check_active = False
+        self.event_log.error("HEALTH_CHECK_FAULT", error=message)
         self.status_var.set(f"Health check fault: {message}")
 
     def refresh_all(self) -> None:
@@ -2702,6 +2819,7 @@ class WT4App(tk.Tk):
         self.tracking_kind = kind
         self.tracking_last_update = time.monotonic()
         self.status_var.set(f"Slewing to {self.kind_label(kind)}.")
+        self.event_log.info("TRACK_START", kind=kind)
         self.tracking_thread = threading.Thread(target=lambda: self.tracking_loop(kind), daemon=True)
         self.tracking_thread.start()
 
@@ -2713,6 +2831,7 @@ class WT4App(tk.Tk):
         self.target_ha_var.set("HA --")
         self.stop_all()
         self.status_var.set("Stopped.")
+        self.event_log.info("TRACK_STOP")
 
     def validate_scan_config(self, config: ScanConfig) -> None:
         if config.antenna_name not in self.configs:
@@ -2752,6 +2871,15 @@ class WT4App(tk.Tk):
         self.scan_active = True
         dialog.set_status(f"{axis_label(axis)} scan starting on {config.antenna_name}...")
         self.status_var.set(f"{axis_label(axis)} scan starting on {config.antenna_name}.")
+        self.event_log.info(
+            "SCAN_START",
+            antenna=config.antenna_name,
+            axis=axis_label(axis),
+            span=config.span_degrees,
+            increment=config.increment_degrees,
+            dwell=config.dwell_seconds,
+            count=config.scan_count,
+        )
         self.scan_thread = threading.Thread(target=lambda: self.scan_worker(axis, config, dialog), daemon=True)
         self.scan_thread.start()
 
@@ -2759,6 +2887,7 @@ class WT4App(tk.Tk):
         self.scan_stop_event.set()
         self.scan_active = False
         self.set_scan_offset(None)
+        self.event_log.info("SCAN_STOP")
         if self.scan_dialog and self.scan_dialog.winfo_exists():
             self.scan_dialog.set_status("Scan stopping; returning to nominal target.")
 
@@ -2801,6 +2930,17 @@ class WT4App(tk.Tk):
                         )
                     )
                     self.events.put(("ok", self.set_status, f"{config.antenna_name} {axis_label(axis)} scan offset {offset:+0.2f} deg."))
+                    self.event_log.info(
+                        "SCAN_POINT",
+                        antenna=config.antenna_name,
+                        axis=axis_label(axis),
+                        scan_number=scan_number,
+                        offset=offset,
+                        nominal_az=nominal.azimuth,
+                        nominal_el=nominal.elevation,
+                        target_az=target.azimuth,
+                        target_el=target.elevation,
+                    )
                     self.slew_all_to_target(nominal, nominal.name[:8].upper(), show_slewing=False)
                     row = self.collect_scan_point(axis, offset, config.dwell_seconds, nominal, target, config.antenna_name, scan_number)
                     rows.append(row)
@@ -2811,6 +2951,7 @@ class WT4App(tk.Tk):
                 target = self.current_tracking_target(self.tracking_kind)
                 self.slew_all_to_target(target, target.name[:8].upper(), show_slewing=False)
             if averaged_rows:
+                self.event_log.info("SCAN_COMPLETE", antenna=config.antenna_name, axis=axis_label(axis), csv=str(csv_path))
                 self.events.put(("ok", lambda _unused: ScanGraphDialog(self, axis, averaged_rows, csv_path, config.antenna_name), None))
                 self.events.put(("ok", dialog.set_status, f"Scan complete: {csv_path.name}"))
                 self.events.put(("ok", self.set_status, f"Scan complete: {csv_path.name}"))
@@ -2819,6 +2960,7 @@ class WT4App(tk.Tk):
         except Exception as exc:
             self.scan_stop_event.set()
             self.set_scan_offset(None)
+            self.event_log.error("SCAN_FAULT", antenna=config.antenna_name, axis=axis_label(axis), error=str(exc))
             self.events.put(("error", dialog.set_status, str(exc)))
             self.events.put(("error", self.set_status, f"Scan fault: {exc}"))
         finally:
@@ -3137,6 +3279,8 @@ class WT4App(tk.Tk):
         self.validate_observer(site)
         if not (0.1 <= site.track_interval_seconds <= 10.0):
             raise RuntimeError("Tracking interval must be 0.1..10.0 seconds.")
+        if not (1 <= site.log_retention_days <= 365):
+            raise RuntimeError("Log retention must be 1..365 days.")
         self._validate_axis_tracking(
             "AZ",
             site.az_track_tolerance_degrees,
@@ -3224,6 +3368,7 @@ class WT4App(tk.Tk):
         def make_worker(name: str, session: SafeAntenna, panel: AntennaPanel):
             activity = self.oled_activity_for_antenna(name, "SLEWING" if show_slewing else "TRACKING")
             effective_target = self.apply_scan_offset(target, name)
+            effective_target = self.apply_az_low_to_high_compensation(name, session, effective_target)
 
             def progress(position: Position) -> None:
                 self.events.put(("position", panel.update_position, position))
@@ -3232,6 +3377,16 @@ class WT4App(tk.Tk):
             def worker() -> None:
                 try:
                     self.events.put(("ok", panel.set_tracking_status, activity))
+                    self.event_log.info(
+                        "SLEW_START",
+                        antenna=name,
+                        mode=mode,
+                        activity=activity,
+                        nominal_az=target.azimuth,
+                        nominal_el=target.elevation,
+                        effective_az=effective_target.azimuth,
+                        effective_el=effective_target.elevation,
+                    )
                     session.update_oled(mode, effective_target.azimuth, effective_target.elevation, activity)
                     position = session.guarded_slew_to(
                         effective_target.azimuth,
@@ -3258,7 +3413,18 @@ class WT4App(tk.Tk):
                     session.update_oled(mode, effective_target.azimuth, effective_target.elevation, final_activity)
                     self.events.put(("position", panel.update_position, position))
                     self.events.put(("ok", panel.set_tracking_status, final_activity))
+                    self.event_log.info(
+                        "SLEW_END",
+                        antenna=name,
+                        mode=mode,
+                        activity=final_activity,
+                        az=position.azimuth,
+                        el=position.elevation,
+                        target_az=effective_target.azimuth,
+                        target_el=effective_target.elevation,
+                    )
                 except Exception as exc:
+                    self.event_log.error("SLEW_FAULT", antenna=name, mode=mode, error=str(exc))
                     self.events.put(("ok", self.handle_controller_fault_event, (name, str(exc))))
                     with lock:
                         errors.append(f"{name}: {exc}")
@@ -3279,6 +3445,42 @@ class WT4App(tk.Tk):
             self.tracking_stop_event.set()
             raise RuntimeError("; ".join(errors))
         return target
+
+    def apply_az_low_to_high_compensation(
+        self,
+        antenna_name: str,
+        session: SafeAntenna,
+        target: TargetPosition,
+    ) -> TargetPosition:
+        compensation = session.config.az_low_to_high_compensation
+        if compensation == 0.0:
+            return target
+        try:
+            current = session.last_position or session.read_position()
+            az_delta = session.config.limits.azimuth_delta_to_target(current.azimuth, target.azimuth)
+        except Exception as exc:
+            self.event_log.warn(
+                "AZ_HYSTERESIS_COMP_SKIPPED",
+                antenna=antenna_name,
+                target=target.name,
+                error=str(exc),
+            )
+            return target
+        if az_delta <= self.az_tracking_start_tolerance():
+            return target
+        adjusted_az = (target.azimuth + compensation) % 360.0
+        adjusted = TargetPosition(target.name, adjusted_az, target.elevation)
+        self.event_log.info(
+            "AZ_HYSTERESIS_COMP_APPLIED",
+            antenna=antenna_name,
+            target=target.name,
+            current_az=current.azimuth,
+            nominal_az=target.azimuth,
+            effective_az=adjusted_az,
+            az_delta=az_delta,
+            compensation=compensation,
+        )
+        return adjusted
 
     def oled_activity_for_antenna(self, antenna_name: str, default_activity: str) -> str:
         if self.scan_active and antenna_name == self.scan_antenna_name:
@@ -3308,6 +3510,7 @@ class WT4App(tk.Tk):
         self.tracking_kind = ""
         self.target_ha_var.set("HA --")
         self.status_var.set(f"Tracking fault: {message}")
+        self.event_log.error("TRACK_FAULT", error=message)
         for panel in self.panels.values():
             if panel.session and panel.status_var.get() in ("SLEWING", "TRACKING"):
                 panel.status_var.set("STOPPED")
@@ -3456,11 +3659,27 @@ class WT4App(tk.Tk):
     def save_tracking_and_config(self, message: str) -> None:
         save_site_config(self.config_path, self.site)
         save_configs(self.config_path, self.configs)
+        self.event_log.retention_days = max(1, int(self.site.log_retention_days))
+        self.event_log.level = self.site.log_level.upper() if self.site.log_level.upper() in EventLogger.LEVELS else "INFO"
+        self.event_log.cleanup_old_logs()
+        self.event_log.info(
+            "TRACKING_SETTINGS_SAVE",
+            interval=self.site.track_interval_seconds,
+            az_start_tolerance=self.site.az_track_tolerance_degrees,
+            el_start_tolerance=self.site.el_track_tolerance_degrees,
+            az_stop_tolerance=self.site.az_stop_tolerance_degrees,
+            el_stop_tolerance=self.site.el_stop_tolerance_degrees,
+            log_retention_days=self.site.log_retention_days,
+            antenna_compensation={
+                name: config.az_low_to_high_compensation for name, config in self.configs.items()
+            },
+        )
         self.status_var.set(message)
 
     def stop_all(self) -> None:
         self.tracking_stop_event.set()
         self.park_stop_event.set()
+        self.event_log.warn("STOP_ALL")
         for panel in self.panels.values():
             panel.stop_event.set()
             if panel.session:
@@ -3486,6 +3705,7 @@ class WT4App(tk.Tk):
 
     def save_config(self, message: str = "Settings saved.") -> None:
         save_configs(self.config_path, self.configs)
+        self.event_log.info("CONFIG_SAVE", message=message)
         self.status_var.set(message)
 
     def run_worker(self, work, on_success, on_error) -> None:
@@ -3514,6 +3734,7 @@ class WT4App(tk.Tk):
 
     def on_close(self) -> None:
         try:
+            self.event_log.info("APP_STOP")
             self.power_panel.save_settings()
             self.power_panel.stop_log()
             self.power_panel.stop()

@@ -33,6 +33,8 @@ class SiteConfig:
     el_slow_speed: int = 20
     az_slow_threshold_degrees: float = 3.0
     el_slow_threshold_degrees: float = 3.0
+    log_retention_days: int = 14
+    log_level: str = "INFO"
 
 
 @dataclass
@@ -94,6 +96,8 @@ def load_site_config(path: Union[str, Path]) -> SiteConfig:
         el_slow_speed=parser.getint("site", "el_slow_speed", fallback=old_slow_speed),
         az_slow_threshold_degrees=parser.getfloat("site", "az_slow_threshold_degrees", fallback=old_slow_threshold),
         el_slow_threshold_degrees=parser.getfloat("site", "el_slow_threshold_degrees", fallback=old_slow_threshold),
+        log_retention_days=parser.getint("site", "log_retention_days", fallback=14),
+        log_level=parser.get("site", "log_level", fallback="INFO").strip().upper() or "INFO",
     )
 
 
@@ -324,6 +328,7 @@ def load_configs(path: Union[str, Path]) -> dict[str, AntennaConfig]:
             gui_speed=parser.getint(section, "gui_speed", fallback=40),
             az_track_speed=parser.getint(section, "az_track_speed", fallback=parser.getint(section, "gui_speed", fallback=40)),
             el_track_speed=parser.getint(section, "el_track_speed", fallback=parser.getint(section, "gui_speed", fallback=40)),
+            az_low_to_high_compensation=parser.getfloat(section, "az_low_to_high_compensation", fallback=0.0),
             park_az=parser.getfloat(section, "park_az", fallback=355.0),
             park_el=parser.getfloat(section, "park_el", fallback=80.0),
             calibration=Calibration(
@@ -363,6 +368,7 @@ def save_configs(path: Union[str, Path], configs: dict[str, AntennaConfig]) -> N
             "gui_speed": str(config.gui_speed),
             "az_track_speed": str(config.az_track_speed),
             "el_track_speed": str(config.el_track_speed),
+            "az_low_to_high_compensation": f"{config.az_low_to_high_compensation:.3f}",
             "park_az": f"{config.park_az:.3f}",
             "park_el": f"{config.park_el:.3f}",
             "az_offset": f"{config.calibration.az_offset:.6f}",
@@ -394,6 +400,8 @@ def _site_section(site: SiteConfig) -> dict[str, str]:
         "el_slow_speed": str(max(0, min(100, int(site.el_slow_speed)))),
         "az_slow_threshold_degrees": f"{site.az_slow_threshold_degrees:.1f}",
         "el_slow_threshold_degrees": f"{site.el_slow_threshold_degrees:.1f}",
+        "log_retention_days": str(max(1, int(site.log_retention_days))),
+        "log_level": site.log_level.upper(),
     }
 
 

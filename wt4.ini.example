@@ -11,6 +11,8 @@ az_slow_speed = 20
 el_slow_speed = 20
 az_slow_threshold_degrees = 3.0
 el_slow_threshold_degrees = 3.0
+log_retention_days = 14
+log_level = INFO
 
 [power]
 center_frequency_hz = 1200000000
@@ -44,6 +46,7 @@ open_delay = 5
 gui_speed = 40
 az_track_speed = 40
 el_track_speed = 40
+az_low_to_high_compensation = 0.200
 park_az = 355.000
 park_el = 80.000
 
@@ -84,6 +87,7 @@ open_delay = 5
 gui_speed = 40
 az_track_speed = 40
 el_track_speed = 40
+az_low_to_high_compensation = 0.500
 park_az = 355.000
 park_el = 80.000
 az_offset = 0.000000
