@@ -2652,14 +2652,15 @@ class WT4App(tk.Tk):
                         )
                     )
                     self.events.put(("ok", self.set_status, f"{config.antenna_name} {axis_label(axis)} scan offset {offset:+0.2f} deg."))
-                    self.slew_all_to_target(nominal, "SCAN", show_slewing=False)
+                    self.slew_all_to_target(nominal, nominal.name[:8].upper(), show_slewing=False)
                     row = self.collect_scan_point(axis, offset, config.dwell_seconds, nominal, target, config.antenna_name, scan_number)
                     rows.append(row)
             averaged_rows = self.average_scan_rows(rows, offsets)
             self.write_scan_csv(csv_path, rows, averaged_rows)
             self.set_scan_offset(None)
             if self.tracking_kind and not self.tracking_stop_event.is_set():
-                self.slew_all_to_target(self.current_tracking_target(self.tracking_kind), "SCAN", show_slewing=False)
+                target = self.current_tracking_target(self.tracking_kind)
+                self.slew_all_to_target(target, target.name[:8].upper(), show_slewing=False)
             if averaged_rows:
                 self.events.put(("ok", lambda _unused: ScanGraphDialog(self, axis, averaged_rows, csv_path, config.antenna_name), None))
                 self.events.put(("ok", dialog.set_status, f"Scan complete: {csv_path.name}"))
@@ -2746,7 +2747,8 @@ class WT4App(tk.Tk):
     def move_scan_to_start(self, axis: Axis, config: ScanConfig, start_offset: float) -> None:
         self.set_scan_offset(config.antenna_name, axis, start_offset)
         if self.tracking_kind and not self.scan_stop_event.is_set():
-            self.slew_all_to_target(self.current_tracking_target(self.tracking_kind), "SCAN", show_slewing=False)
+            target = self.current_tracking_target(self.tracking_kind)
+            self.slew_all_to_target(target, target.name[:8].upper(), show_slewing=False)
 
     def write_scan_csv(self, csv_path: Path, rows: list[dict[str, object]], averaged_rows: list[dict[str, object]]) -> None:
         if not rows:
@@ -3071,7 +3073,7 @@ class WT4App(tk.Tk):
         lock = threading.Lock()
 
         def make_worker(name: str, session: SafeAntenna, panel: AntennaPanel):
-            activity = "SLEWING" if show_slewing else "TRACKING"
+            activity = self.oled_activity_for_antenna(name, "SLEWING" if show_slewing else "TRACKING")
             effective_target = self.apply_scan_offset(target, name)
 
             def progress(position: Position) -> None:
@@ -3103,9 +3105,10 @@ class WT4App(tk.Tk):
                         self.events.put(("position", panel.update_position, position))
                         self.events.put(("ok", panel.set_tracking_status, "STOPPED"))
                         return
-                    session.update_oled(mode, effective_target.azimuth, effective_target.elevation, "TRACKING")
+                    final_activity = self.oled_activity_for_antenna(name, "TRACKING")
+                    session.update_oled(mode, effective_target.azimuth, effective_target.elevation, final_activity)
                     self.events.put(("position", panel.update_position, position))
-                    self.events.put(("ok", panel.set_tracking_status, "TRACKING"))
+                    self.events.put(("ok", panel.set_tracking_status, final_activity))
                 except Exception as exc:
                     self.events.put(("error", panel.set_fault, str(exc)))
                     with lock:
@@ -3127,6 +3130,11 @@ class WT4App(tk.Tk):
             self.tracking_stop_event.set()
             raise RuntimeError("; ".join(errors))
         return target
+
+    def oled_activity_for_antenna(self, antenna_name: str, default_activity: str) -> str:
+        if self.scan_active and antenna_name == self.scan_antenna_name:
+            return "SCAN"
+        return default_activity
 
     def az_tracking_start_tolerance(self) -> float:
         return abs(self.site.az_track_tolerance_degrees)
