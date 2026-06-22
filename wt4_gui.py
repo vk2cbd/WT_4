@@ -44,7 +44,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.9"
+APP_VERSION = "v4.10"
 
 
 class EventLogger:
@@ -2599,6 +2599,7 @@ class WT4App(tk.Tk):
         self.parking_active = False
         self.scan_active = False
         self.yfactor_active = False
+        self.yfactor_target_label = ""
         self.scan_antenna_name = ""
         self.scan_axis: Optional[Axis] = None
         self.scan_offset_degrees = 0.0
@@ -3223,6 +3224,8 @@ class WT4App(tk.Tk):
         self.tracking_active = False
         self.yfactor_stop_event.clear()
         self.yfactor_active = True
+        self.yfactor_target_label = target_label
+        self.events.put(("ok", self.apply_yfactor_target_position, target_label))
         dialog.set_status(f"Y Factor starting on {antenna_name}.")
         self.status_var.set(f"Y Factor starting on {antenna_name}.")
         self.event_log.info(
@@ -3246,6 +3249,7 @@ class WT4App(tk.Tk):
             return
         self.yfactor_stop_event.set()
         self.yfactor_active = False
+        self.yfactor_target_label = ""
         self.event_log.info("YFACTOR_STOP")
         if self.yfactor_dialog and self.yfactor_dialog.winfo_exists():
             self.yfactor_dialog.set_status("Y Factor stopping.")
@@ -3317,14 +3321,16 @@ class WT4App(tk.Tk):
                         hot_target = self.yfactor_hot_target(target_label)
                         cold_target = self.yfactor_cold_target(cold_mode, hot_target, cold_az, cold_el, cold_ra, cold_dec)
                         self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: hot {hot_target.name}."))
+                        self.events.put(("ok", self.apply_yfactor_target_position, target_label))
                         self.yfactor_slew_selected(antenna_name, selected, selected_panel, hot_target, "HOT")
-                        hot = self.collect_power_average(dwell_seconds, self.yfactor_stop_event)
+                        hot = self.collect_power_average(dwell_seconds, self.yfactor_stop_event, selected, selected_panel, target_label)
                         if self.yfactor_stop_event.is_set():
                             break
                         completed_unit = str(hot["power_unit"])
                         self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: cold sky."))
+                        self.events.put(("ok", self.apply_yfactor_target_position, target_label))
                         self.yfactor_slew_selected(antenna_name, selected, selected_panel, cold_target, "COLD")
-                        cold = self.collect_power_average(dwell_seconds, self.yfactor_stop_event)
+                        cold = self.collect_power_average(dwell_seconds, self.yfactor_stop_event, selected, selected_panel, target_label)
                         if self.yfactor_stop_event.is_set():
                             break
                         y_db = hot["power_value"] - cold["power_value"]
@@ -3405,6 +3411,7 @@ class WT4App(tk.Tk):
             self.events.put(("error", self.set_status, f"Y Factor fault: {exc}"))
         finally:
             self.yfactor_active = False
+            self.yfactor_target_label = ""
 
     def yfactor_hot_target(self, target_label: str) -> TargetPosition:
         if target_label == "Sun":
@@ -3474,13 +3481,31 @@ class WT4App(tk.Tk):
             self.events.put(("position", panel.update_position, position))
         return position
 
-    def collect_power_average(self, dwell_seconds: float, stop_event: threading.Event) -> dict[str, object]:
+    def collect_power_average(
+        self,
+        dwell_seconds: float,
+        stop_event: threading.Event,
+        session: Optional[SafeAntenna] = None,
+        panel: Optional[AntennaPanel] = None,
+        target_label: str = "",
+    ) -> dict[str, object]:
         measurements: list[dict[str, object]] = []
         end_time = time.monotonic() + dwell_seconds
+        next_position_update = 0.0
         while not stop_event.is_set() and time.monotonic() < end_time:
             measurement = self.power_panel.current_power_measurement()
             if measurement is not None:
                 measurements.append(measurement)
+            if session and panel and time.monotonic() >= next_position_update:
+                try:
+                    position = session.read_position()
+                    self.events.put(("position", panel.update_position, position))
+                    if target_label:
+                        self.events.put(("ok", self.apply_yfactor_target_position, target_label))
+                except Exception as exc:
+                    self.events.put(("ok", self.handle_controller_fault_event, (session.config.name, str(exc))))
+                    raise
+                next_position_update = time.monotonic() + 0.5
             time.sleep(0.1)
         if not measurements:
             raise RuntimeError("No RTL power measurements were available.")
@@ -3764,14 +3789,23 @@ class WT4App(tk.Tk):
         self.target_el_var.set(f"EL {target.elevation:0.2f}")
         self.target_ha_var.set(self.current_hour_angle_text())
 
-    def current_hour_angle_text(self) -> str:
+    def apply_yfactor_target_position(self, target_label: str) -> None:
+        target = self.yfactor_hot_target(target_label)
+        self.current_target = target
+        self.target_name_var.set(target.name)
+        self.target_az_var.set(f"AZ {target.azimuth:0.2f}")
+        self.target_el_var.set(f"EL {target.elevation:0.2f}")
+        self.target_ha_var.set(self.current_hour_angle_text(self.kind_for_yfactor_target(target_label)))
+
+    def current_hour_angle_text(self, kind: Optional[str] = None) -> str:
         now = datetime.now(timezone.utc)
+        kind = kind or self.tracking_kind
         try:
-            if self.tracking_kind == "sun":
+            if kind == "sun":
                 ra_hours = sun_equatorial(now).ra_hours
-            elif self.tracking_kind == "moon":
+            elif kind == "moon":
                 ra_hours = moon_equatorial(now)[0].ra_hours
-            elif self.tracking_kind == "source":
+            elif kind == "source":
                 ra_hours = self.selected_source().ra_hours
             else:
                 return "HA --"
@@ -3793,6 +3827,15 @@ class WT4App(tk.Tk):
         total_minutes = int(round(abs(hour_angle_degrees) / 15.0 * 60.0))
         hours, minutes = divmod(total_minutes, 60)
         return f"{sign}{hours:02d}:{minutes:02d}"
+
+    def kind_for_yfactor_target(self, target_label: str) -> str:
+        if target_label == "Sun":
+            return "sun"
+        if target_label == "Moon":
+            return "moon"
+        if target_label == "Source":
+            return "source"
+        return ""
 
     def slew_all_to_target(
         self,
@@ -4181,6 +4224,11 @@ class WT4App(tk.Tk):
         if self.tracking_active:
             self.refresh_tracking_target_display()
             self.check_tracking_watchdog()
+        elif self.yfactor_active and self.yfactor_target_label:
+            try:
+                self.apply_yfactor_target_position(self.yfactor_target_label)
+            except Exception as exc:
+                self.status_var.set(f"Y Factor target refresh fault: {exc}")
         self.update_reference_positions()
         self.after(1500, self.periodic_refresh)
 
