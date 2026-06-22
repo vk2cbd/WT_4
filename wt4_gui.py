@@ -44,7 +44,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.7"
+APP_VERSION = "v4.8"
 
 
 class EventLogger:
@@ -2506,7 +2506,7 @@ class YFactorDialog(tk.Toplevel):
         ttk.Combobox(
             body,
             textvariable=self.cold_mode_var,
-            values=("Sun AZ / EL 80", "AZ/EL", "RA/Dec"),
+            values=("Sun AZ / EL 80", "Moon AZ / EL 80", "AZ/EL", "RA/Dec"),
             width=16,
             state="readonly",
         ).grid(row=2, column=1, sticky="w", pady=2)
@@ -2569,8 +2569,8 @@ class WT4App(tk.Tk):
     def __init__(self, config_path: str) -> None:
         super().__init__()
         self.title(f"WT4 Antenna Controller {APP_VERSION}")
-        self.geometry("980x645")
-        self.minsize(960, 620)
+        self.geometry("1100x670")
+        self.minsize(1080, 645)
         self.config_path = config_path
         self.configs = load_configs(config_path)
         self.site = load_site_config(config_path)
@@ -3364,6 +3364,9 @@ class WT4App(tk.Tk):
         if cold_mode == "Sun AZ / EL 80":
             sun = self.target_for_kind("sun")
             return TargetPosition("Cold Sky", sun.azimuth, 80.0)
+        if cold_mode == "Moon AZ / EL 80":
+            moon = self.target_for_kind("moon")
+            return TargetPosition("Cold Sky", moon.azimuth, 80.0)
         if cold_mode == "AZ/EL":
             return TargetPosition("Cold Sky", cold_az % 360.0, cold_el)
         if cold_mode == "RA/Dec":

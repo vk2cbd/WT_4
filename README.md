@@ -161,9 +161,9 @@ antenna, choose Sun, Moon, or the currently selected user source as the hot
 target, set the number of measurements and dwell time, then start the run. WT4
 stops the non-selected antenna, slews the selected antenna between the hot
 target and cold sky, averages the hot/cold power at each dwell, then reports one
-averaged Y factor as both ratio and dB. The default cold-sky position is the
-current Sun azimuth at EL 80 degrees; the dialog can instead use manual AZ/EL or
-manual RA/Dec for the cold position.
+averaged Y factor as both ratio and dB. Cold-sky presets can use the current
+Sun or Moon azimuth at EL 80 degrees; the dialog can instead use manual AZ/EL
+or manual RA/Dec for the cold position.
 
 `Scan Cal` performs a source-relative calibration scan while normal tracking
 continues. Start tracking Sun, Moon, or a selected source, start the RTL power
