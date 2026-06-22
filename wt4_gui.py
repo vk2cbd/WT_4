@@ -14,7 +14,7 @@ import tkinter as tk
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tkinter import messagebox, ttk
-from typing import Optional
+from typing import Callable, Optional
 
 from wt4_astro import TargetPosition, local_sidereal_time, moon_equatorial, moon_position, source_position
 from wt4_config import (
@@ -44,7 +44,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.11"
+APP_VERSION = "v4.12"
 
 
 class EventLogger:
@@ -3328,21 +3328,32 @@ class WT4App(tk.Tk):
                     for index in range(1, count + 1):
                         if self.yfactor_stop_event.is_set():
                             break
-                        hot_target = self.yfactor_hot_target(target_label)
-                        cold_target = self.yfactor_cold_target(cold_mode, hot_target, cold_az, cold_el, cold_ra, cold_dec)
+                        hot_provider = lambda label=target_label: self.yfactor_hot_target(label)
+                        cold_provider = lambda mode=cold_mode, az=cold_az, el=cold_el, ra=cold_ra, dec=cold_dec: self.yfactor_cold_target(
+                            mode,
+                            self.yfactor_hot_target(target_label),
+                            az,
+                            el,
+                            ra,
+                            dec,
+                        )
+                        hot_target = hot_provider()
+                        cold_target = cold_provider()
                         self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: hot {hot_target.name}."))
                         self.events.put(("ok", self.apply_yfactor_target_position, target_label))
-                        self.yfactor_slew_selected(antenna_name, selected, selected_panel, hot_target, "HOT")
+                        self.yfactor_slew_selected(antenna_name, selected, selected_panel, hot_provider, "HOT")
                         hot = self.collect_power_average(dwell_seconds, self.yfactor_stop_event, selected, selected_panel, target_label)
                         if self.yfactor_stop_event.is_set():
                             break
                         completed_unit = str(hot["power_unit"])
+                        hot_target = hot_provider()
                         self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: cold sky."))
                         self.events.put(("ok", self.apply_yfactor_target_position, target_label))
-                        self.yfactor_slew_selected(antenna_name, selected, selected_panel, cold_target, "COLD")
+                        self.yfactor_slew_selected(antenna_name, selected, selected_panel, cold_provider, "COLD")
                         cold = self.collect_power_average(dwell_seconds, self.yfactor_stop_event, selected, selected_panel, target_label)
                         if self.yfactor_stop_event.is_set():
                             break
+                        cold_target = cold_provider()
                         y_db = hot["power_value"] - cold["power_value"]
                         y_ratio = 10 ** (y_db / 10.0)
                         rows.append(
@@ -3458,15 +3469,28 @@ class WT4App(tk.Tk):
         antenna_name: str,
         session: SafeAntenna,
         panel: Optional[AntennaPanel],
-        target: TargetPosition,
+        target_provider: Callable[[], TargetPosition],
         mode: str,
     ) -> Position:
-        effective_target = self.apply_az_low_to_high_compensation(antenna_name, session, target)
+        effective_target = self.apply_az_low_to_high_compensation(antenna_name, session, target_provider())
+        current_target = {"target": effective_target}
+
+        def live_target(position: Position) -> tuple[float, float]:
+            target = target_provider()
+            compensation = session.config.az_low_to_high_compensation
+            effective = target
+            if compensation != 0.0:
+                az_delta = session.config.limits.azimuth_delta_to_target(position.azimuth, target.azimuth)
+                if az_delta > self.az_tracking_start_tolerance():
+                    effective = TargetPosition(target.name, (target.azimuth + compensation) % 360.0, target.elevation)
+            current_target["target"] = effective
+            return effective.azimuth, effective.elevation
 
         def progress(position: Position) -> None:
             if panel:
                 self.events.put(("position", panel.update_position, position))
-            session.update_oled_position(effective_target.azimuth, effective_target.elevation, "YFACT")
+            target = current_target["target"]
+            session.update_oled_position(target.azimuth, target.elevation, "YFACT")
 
         if panel:
             self.events.put(("ok", panel.set_tracking_status, "YFACTOR"))
@@ -3486,6 +3510,7 @@ class WT4App(tk.Tk):
             self.site.az_slow_threshold_degrees,
             self.site.el_slow_threshold_degrees,
             progress,
+            live_target,
         )
         if panel:
             self.events.put(("position", panel.update_position, position))

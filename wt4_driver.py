@@ -546,6 +546,7 @@ class SafeAntenna:
         az_slow_threshold: float = 3.0,
         el_slow_threshold: float = 3.0,
         update_callback: Optional[Callable[[Position], None]] = None,
+        target_callback: Optional[Callable[[Position], tuple[float, float]]] = None,
     ) -> Position:
         target_azimuth = normalize_degrees(target_azimuth)
         az_start_tolerance = max(0.01, abs(float(az_start_tolerance)))
@@ -603,6 +604,46 @@ class SafeAntenna:
                 time.sleep(self.config.limits.poll_interval)
                 with self.lock:
                     pos = self.read_position_locked()
+                    if target_callback:
+                        target_azimuth, target_elevation = target_callback(pos)
+                        target_azimuth = normalize_degrees(target_azimuth)
+                        self.config.limits.assert_position_allowed(target_azimuth, target_elevation)
+                        az_error = self.config.limits.azimuth_delta_to_target(pos.azimuth, target_azimuth)
+                        el_error = target_elevation - pos.elevation
+                        if Axis.AZIMUTH in active:
+                            active[Axis.AZIMUTH]["target"] = target_azimuth
+                        elif abs(az_error) > az_start_tolerance:
+                            direction = Direction.AZ_CW if az_error > 0 else Direction.AZ_CCW
+                            self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                            slow = abs(az_error) <= az_slow_threshold
+                            self._start_direction(direction, az_slow_speed if slow else az_fast_speed)
+                            active[Axis.AZIMUTH] = {
+                                "direction": direction,
+                                "target": target_azimuth,
+                                "tolerance": az_stop_tolerance,
+                                "direction_sign": 1.0 if az_error > 0.0 else -1.0,
+                                "fast_speed": az_fast_speed,
+                                "slow_speed": az_slow_speed,
+                                "slow_threshold": az_slow_threshold,
+                                "slow": slow,
+                            }
+                        if Axis.ELEVATION in active:
+                            active[Axis.ELEVATION]["target"] = target_elevation
+                        elif abs(el_error) > el_start_tolerance:
+                            direction = Direction.EL_UP if el_error > 0 else Direction.EL_DOWN
+                            self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
+                            slow = abs(el_error) <= el_slow_threshold
+                            self._start_direction(direction, el_slow_speed if slow else el_fast_speed)
+                            active[Axis.ELEVATION] = {
+                                "direction": direction,
+                                "target": target_elevation,
+                                "tolerance": el_stop_tolerance,
+                                "direction_sign": 1.0 if el_error > 0.0 else -1.0,
+                                "fast_speed": el_fast_speed,
+                                "slow_speed": el_slow_speed,
+                                "slow_threshold": el_slow_threshold,
+                                "slow": slow,
+                            }
                     for axis, state in list(active.items()):
                         direction = state["direction"]
                         self.config.limits.assert_move_allowed(direction, pos.azimuth, pos.elevation)
