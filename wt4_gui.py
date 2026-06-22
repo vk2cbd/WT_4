@@ -44,7 +44,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.10"
+APP_VERSION = "v4.11"
 
 
 class EventLogger:
@@ -3221,6 +3221,16 @@ class WT4App(tk.Tk):
             return
 
         self.tracking_stop_event.set()
+        if self.tracking_thread and self.tracking_thread.is_alive():
+            max_jog = max((session.config.limits.max_jog_seconds for session in self.sessions.values()), default=60.0)
+            timeout = min(10.0, max(2.0, self.site.track_interval_seconds + max_jog * 0.1))
+            self.tracking_thread.join(timeout=timeout)
+            if self.tracking_thread.is_alive():
+                message = "Tracking is still stopping; try Y Factor again in a moment."
+                dialog.set_status(message)
+                self.status_var.set(message)
+                self.event_log.warn("YFACTOR_START_DEFERRED", reason="tracking_thread_alive")
+                return
         self.tracking_active = False
         self.yfactor_stop_event.clear()
         self.yfactor_active = True
@@ -3398,7 +3408,7 @@ class WT4App(tk.Tk):
             avg_y_db = sum(row["y_db"] for row in rows) / len(rows)
             avg_y_ratio = sum(row["y_ratio"] for row in rows) / len(rows)
             summary = (
-                f"Y Factor {avg_y_ratio:0.3f} ({avg_y_db:0.2f} dB), "
+                f"Y Factor {avg_y_db:0.1f} dB, "
                 f"hot {avg_hot:0.1f} {completed_unit}, cold {avg_cold:0.1f} {completed_unit}, n={len(rows)}"
             )
             self.event_log.info("YFACTOR_COMPLETE", antenna=antenna_name, y_ratio=avg_y_ratio, y_db=avg_y_db, count=len(rows), csv=str(log_path))
