@@ -44,7 +44,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.6"
+APP_VERSION = "v4.7"
 
 
 class EventLogger:
@@ -2472,6 +2472,99 @@ class ScanGraphDialog(tk.Toplevel):
             canvas.create_text(left - 8, y, text=f"{y_value:0.1f}", anchor="e")
 
 
+class YFactorDialog(tk.Toplevel):
+    def __init__(self, app: "WT4App") -> None:
+        super().__init__(app)
+        self.app = app
+        self.title("Y Factor")
+        self.resizable(False, False)
+        self.transient(app)
+        self.grab_set()
+        antenna_names = list(app.configs) or list(app.panels)
+        self.antenna_var = tk.StringVar(value=antenna_names[0] if antenna_names else "")
+        self.target_var = tk.StringVar(value="Sun")
+        self.cold_mode_var = tk.StringVar(value="Sun AZ / EL 80")
+        self.cold_az_var = tk.StringVar(value="0.0")
+        self.cold_el_var = tk.StringVar(value="80.0")
+        self.cold_ra_var = tk.StringVar(value="0.0000")
+        self.cold_dec_var = tk.StringVar(value="0.0")
+        self.count_var = tk.StringVar(value="3")
+        self.dwell_var = tk.StringVar(value="5.0")
+        self.status_var = tk.StringVar(value="Start RTL power before measuring.")
+
+        body = ttk.Frame(self, padding=10)
+        body.grid(row=0, column=0, sticky="nsew")
+        ttk.Label(body, text="Hot target").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Combobox(body, textvariable=self.target_var, values=("Sun", "Moon", "Source"), width=16, state="readonly").grid(
+            row=0, column=1, sticky="w", pady=2
+        )
+        ttk.Label(body, text="Antenna").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Combobox(body, textvariable=self.antenna_var, values=antenna_names, width=16, state="readonly").grid(
+            row=1, column=1, sticky="w", pady=2
+        )
+        ttk.Label(body, text="Cold sky").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Combobox(
+            body,
+            textvariable=self.cold_mode_var,
+            values=("Sun AZ / EL 80", "AZ/EL", "RA/Dec"),
+            width=16,
+            state="readonly",
+        ).grid(row=2, column=1, sticky="w", pady=2)
+        self._entry(body, "Cold AZ", self.cold_az_var, 3)
+        self._entry(body, "Cold EL", self.cold_el_var, 4)
+        self._entry(body, "Cold RA h", self.cold_ra_var, 5)
+        self._entry(body, "Cold Dec", self.cold_dec_var, 6)
+        self._entry(body, "Measurements", self.count_var, 7)
+        self._entry(body, "Dwell sec", self.dwell_var, 8)
+        ttk.Label(body, textvariable=self.status_var, foreground="red", wraplength=360).grid(
+            row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0)
+        )
+
+        buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        buttons.grid(row=1, column=0, sticky="ew")
+        ttk.Button(buttons, text="Start", command=self.start).pack(side="left")
+        ttk.Button(buttons, text="Stop", command=app.stop_yfactor).pack(side="left", padx=(6, 0))
+        ttk.Button(buttons, text="Close", command=self.close).pack(side="right")
+        self.protocol("WM_DELETE_WINDOW", self.close)
+
+    def _entry(self, parent: tk.Misc, label: str, variable: tk.StringVar, row: int) -> None:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Entry(parent, textvariable=variable, width=12).grid(row=row, column=1, sticky="w", pady=2)
+
+    def start(self) -> None:
+        try:
+            count = int(self.count_var.get())
+            dwell = float(self.dwell_var.get())
+            cold_az = float(self.cold_az_var.get())
+            cold_el = float(self.cold_el_var.get())
+            cold_ra = float(self.cold_ra_var.get())
+            cold_dec = float(self.cold_dec_var.get())
+        except ValueError:
+            self.status_var.set("Y Factor fields must be numeric.")
+            return
+        self.app.start_yfactor(
+            dialog=self,
+            antenna_name=self.antenna_var.get().strip(),
+            target_label=self.target_var.get(),
+            cold_mode=self.cold_mode_var.get(),
+            cold_az=cold_az,
+            cold_el=cold_el,
+            cold_ra=cold_ra,
+            cold_dec=cold_dec,
+            count=count,
+            dwell_seconds=dwell,
+        )
+
+    def set_status(self, text: str) -> None:
+        if self.winfo_exists():
+            self.status_var.set(text)
+
+    def close(self) -> None:
+        if self.app.yfactor_dialog is self:
+            self.app.yfactor_dialog = None
+        self.destroy()
+
+
 class WT4App(tk.Tk):
     def __init__(self, config_path: str) -> None:
         super().__init__()
@@ -2495,14 +2588,17 @@ class WT4App(tk.Tk):
         self.tracking_stop_event = threading.Event()
         self.park_stop_event = threading.Event()
         self.scan_stop_event = threading.Event()
+        self.yfactor_stop_event = threading.Event()
         self.motion_lock = threading.Lock()
         self.scan_offset_lock = threading.Lock()
         self.tracking_active = False
         self.tracking_thread: Optional[threading.Thread] = None
         self.scan_thread: Optional[threading.Thread] = None
+        self.yfactor_thread: Optional[threading.Thread] = None
         self.tracking_last_update = 0.0
         self.parking_active = False
         self.scan_active = False
+        self.yfactor_active = False
         self.scan_antenna_name = ""
         self.scan_axis: Optional[Axis] = None
         self.scan_offset_degrees = 0.0
@@ -2520,6 +2616,7 @@ class WT4App(tk.Tk):
         self.calibration_dialog: Optional[CalibrationDialog] = None
         self.peak_calibration_dialog: Optional[PeakCalibrationDialog] = None
         self.scan_dialog: Optional[ScanCalibrationDialog] = None
+        self.yfactor_dialog: Optional[YFactorDialog] = None
         self.rtl_calibration_dialog: Optional[RtlCalibrationDialog] = None
 
         self.status_var = tk.StringVar(value="Load config, connect antennas, then use guarded jogs.")
@@ -2540,6 +2637,7 @@ class WT4App(tk.Tk):
         ttk.Button(top_row_1, text="Calibration", command=self.open_calibration).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Peak Cal", command=self.open_peak_calibration).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Scan Cal", command=self.open_scan_calibration).pack(side="left", padx=(6, 0))
+        ttk.Button(top_row_1, text="Y Factor", command=self.open_yfactor).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="Encoders", command=self.open_encoders).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_1, text="STOP ALL", command=self.stop_all).pack(side="left", padx=(6, 0))
         ttk.Button(top_row_2, text="Track Sun", command=lambda: self.start_tracking("sun")).pack(side="left")
@@ -2733,8 +2831,10 @@ class WT4App(tk.Tk):
         self.tracking_stop_event.set()
         self.scan_stop_event.set()
         self.park_stop_event.set()
+        self.yfactor_stop_event.set()
         self.tracking_active = False
         self.scan_active = False
+        self.yfactor_active = False
         self.parking_active = False
         self.set_scan_offset(None)
         self.status_var.set(f"{name} controller offline: {message}")
@@ -2802,6 +2902,9 @@ class WT4App(tk.Tk):
             )
 
     def start_tracking(self, kind: str) -> None:
+        if self.yfactor_active:
+            self.status_var.set("Stop Y Factor before tracking.")
+            return
         if self.tracking_active:
             self.status_var.set("Tracking already active.")
             return
@@ -2828,6 +2931,7 @@ class WT4App(tk.Tk):
         self.tracking_active = False
         self.tracking_kind = ""
         self.stop_scan()
+        self.stop_yfactor()
         self.target_ha_var.set("HA --")
         self.stop_all()
         self.status_var.set("Stopped.")
@@ -3073,6 +3177,254 @@ class WT4App(tk.Tk):
                 writer.writerow({field: "" for field in fieldnames})
                 for row in averaged_rows:
                     writer.writerow(row)
+
+    def start_yfactor(
+        self,
+        dialog: YFactorDialog,
+        antenna_name: str,
+        target_label: str,
+        cold_mode: str,
+        cold_az: float,
+        cold_el: float,
+        cold_ra: float,
+        cold_dec: float,
+        count: int,
+        dwell_seconds: float,
+    ) -> None:
+        if self.yfactor_thread and self.yfactor_thread.is_alive():
+            dialog.set_status("Y Factor measurement already running.")
+            return
+        if self.scan_active or self.parking_active:
+            dialog.set_status("Stop scan or park before Y Factor measurement.")
+            return
+        if antenna_name not in self.sessions:
+            dialog.set_status("Connect and select an antenna before Y Factor measurement.")
+            return
+        if self.power_panel.current_power_measurement() is None:
+            dialog.set_status("Start RTL power and wait for readings before Y Factor measurement.")
+            return
+        if not (1 <= count <= 50):
+            dialog.set_status("Measurements must be 1..50.")
+            return
+        if not (0.5 <= dwell_seconds <= 120.0):
+            dialog.set_status("Dwell must be 0.5..120.0 seconds.")
+            return
+        try:
+            hot_target = self.yfactor_hot_target(target_label)
+            cold_target = self.yfactor_cold_target(cold_mode, hot_target, cold_az, cold_el, cold_ra, cold_dec)
+            session = self.sessions[antenna_name]
+            session.config.limits.assert_position_allowed(hot_target.azimuth, hot_target.elevation)
+            session.config.limits.assert_position_allowed(cold_target.azimuth, cold_target.elevation)
+        except Exception as exc:
+            dialog.set_status(str(exc))
+            return
+
+        self.tracking_stop_event.set()
+        self.tracking_active = False
+        self.yfactor_stop_event.clear()
+        self.yfactor_active = True
+        dialog.set_status(f"Y Factor starting on {antenna_name}.")
+        self.status_var.set(f"Y Factor starting on {antenna_name}.")
+        self.event_log.info(
+            "YFACTOR_START",
+            antenna=antenna_name,
+            hot=hot_target.name,
+            cold=cold_target.name,
+            count=count,
+            dwell=dwell_seconds,
+        )
+        self.yfactor_thread = threading.Thread(
+            target=lambda: self.yfactor_worker(dialog, antenna_name, target_label, cold_mode, cold_az, cold_el, cold_ra, cold_dec, count, dwell_seconds),
+            daemon=True,
+        )
+        self.yfactor_thread.start()
+
+    def stop_yfactor(self) -> None:
+        if not self.yfactor_active and not (self.yfactor_thread and self.yfactor_thread.is_alive()):
+            if self.yfactor_dialog and self.yfactor_dialog.winfo_exists():
+                self.yfactor_dialog.set_status("No Y Factor measurement is running.")
+            return
+        self.yfactor_stop_event.set()
+        self.yfactor_active = False
+        self.event_log.info("YFACTOR_STOP")
+        if self.yfactor_dialog and self.yfactor_dialog.winfo_exists():
+            self.yfactor_dialog.set_status("Y Factor stopping.")
+
+    def yfactor_worker(
+        self,
+        dialog: YFactorDialog,
+        antenna_name: str,
+        target_label: str,
+        cold_mode: str,
+        cold_az: float,
+        cold_el: float,
+        cold_ra: float,
+        cold_dec: float,
+        count: int,
+        dwell_seconds: float,
+    ) -> None:
+        rows: list[dict[str, float]] = []
+        completed_unit = "dB"
+        try:
+            with self.motion_lock:
+                selected = self.sessions.get(antenna_name)
+                if not selected:
+                    raise RuntimeError(f"{antenna_name} is not connected.")
+                selected_panel = self.panels.get(antenna_name)
+                for other_name, other_session in list(self.sessions.items()):
+                    if other_name == antenna_name:
+                        continue
+                    other_session.stop_all()
+                    other_session.update_oled_activity("STOPPED")
+                    other_panel = self.panels.get(other_name)
+                    if other_panel:
+                        self.events.put(("ok", other_panel.set_tracking_status, "STOPPED"))
+
+                for index in range(1, count + 1):
+                    if self.yfactor_stop_event.is_set():
+                        break
+                    hot_target = self.yfactor_hot_target(target_label)
+                    cold_target = self.yfactor_cold_target(cold_mode, hot_target, cold_az, cold_el, cold_ra, cold_dec)
+                    self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: hot {hot_target.name}."))
+                    self.yfactor_slew_selected(antenna_name, selected, selected_panel, hot_target, "HOT")
+                    hot = self.collect_power_average(dwell_seconds, self.yfactor_stop_event)
+                    if self.yfactor_stop_event.is_set():
+                        break
+                    completed_unit = str(hot["power_unit"])
+                    self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: cold sky."))
+                    self.yfactor_slew_selected(antenna_name, selected, selected_panel, cold_target, "COLD")
+                    cold = self.collect_power_average(dwell_seconds, self.yfactor_stop_event)
+                    if self.yfactor_stop_event.is_set():
+                        break
+                    y_db = hot["power_value"] - cold["power_value"]
+                    rows.append(
+                        {
+                            "hot": hot["power_value"],
+                            "cold": cold["power_value"],
+                            "y_db": y_db,
+                            "y_ratio": 10 ** (y_db / 10.0),
+                        }
+                    )
+                    self.event_log.info(
+                        "YFACTOR_POINT",
+                        antenna=antenna_name,
+                        index=index,
+                        hot=hot["power_value"],
+                        cold=cold["power_value"],
+                        unit=hot["power_unit"],
+                        y_db=y_db,
+                    )
+                selected.stop_all()
+                selected.update_oled_activity("STOPPED")
+                if selected_panel:
+                    self.events.put(("ok", selected_panel.set_tracking_status, "STOPPED"))
+            if self.yfactor_stop_event.is_set():
+                self.events.put(("ok", dialog.set_status, "Y Factor stopped."))
+                self.events.put(("ok", self.set_status, "Y Factor stopped."))
+                return
+            if not rows:
+                raise RuntimeError("No Y Factor measurements were completed.")
+            avg_hot = sum(row["hot"] for row in rows) / len(rows)
+            avg_cold = sum(row["cold"] for row in rows) / len(rows)
+            avg_y_db = sum(row["y_db"] for row in rows) / len(rows)
+            avg_y_ratio = sum(row["y_ratio"] for row in rows) / len(rows)
+            summary = (
+                f"Y Factor {avg_y_ratio:0.3f} ({avg_y_db:0.2f} dB), "
+                f"hot {avg_hot:0.1f} {completed_unit}, cold {avg_cold:0.1f} {completed_unit}, n={len(rows)}"
+            )
+            self.event_log.info("YFACTOR_COMPLETE", antenna=antenna_name, y_ratio=avg_y_ratio, y_db=avg_y_db, count=len(rows))
+            self.events.put(("ok", dialog.set_status, summary))
+            self.events.put(("ok", self.set_status, summary))
+        except Exception as exc:
+            self.yfactor_stop_event.set()
+            self.event_log.error("YFACTOR_FAULT", antenna=antenna_name, error=str(exc))
+            self.events.put(("error", dialog.set_status, str(exc)))
+            self.events.put(("error", self.set_status, f"Y Factor fault: {exc}"))
+        finally:
+            self.yfactor_active = False
+
+    def yfactor_hot_target(self, target_label: str) -> TargetPosition:
+        if target_label == "Sun":
+            return self.target_for_kind("sun")
+        if target_label == "Moon":
+            return self.target_for_kind("moon")
+        if target_label == "Source":
+            return self.target_for_kind("source")
+        raise RuntimeError("Unknown Y Factor target.")
+
+    def yfactor_cold_target(
+        self,
+        cold_mode: str,
+        hot_target: TargetPosition,
+        cold_az: float,
+        cold_el: float,
+        cold_ra: float,
+        cold_dec: float,
+    ) -> TargetPosition:
+        if cold_mode == "Sun AZ / EL 80":
+            sun = self.target_for_kind("sun")
+            return TargetPosition("Cold Sky", sun.azimuth, 80.0)
+        if cold_mode == "AZ/EL":
+            return TargetPosition("Cold Sky", cold_az % 360.0, cold_el)
+        if cold_mode == "RA/Dec":
+            return source_position("Cold Sky", cold_ra, cold_dec, self.site.latitude, self.site.longitude)
+        raise RuntimeError("Unknown cold sky mode.")
+
+    def yfactor_slew_selected(
+        self,
+        antenna_name: str,
+        session: SafeAntenna,
+        panel: Optional[AntennaPanel],
+        target: TargetPosition,
+        mode: str,
+    ) -> Position:
+        effective_target = self.apply_az_low_to_high_compensation(antenna_name, session, target)
+
+        def progress(position: Position) -> None:
+            if panel:
+                self.events.put(("position", panel.update_position, position))
+            session.update_oled_position(effective_target.azimuth, effective_target.elevation, "YFACT")
+
+        if panel:
+            self.events.put(("ok", panel.set_tracking_status, "YFACTOR"))
+        session.update_oled(mode, effective_target.azimuth, effective_target.elevation, "YFACT")
+        position = session.guarded_slew_to(
+            effective_target.azimuth,
+            effective_target.elevation,
+            session.config.az_track_speed,
+            session.config.el_track_speed,
+            self.yfactor_stop_event,
+            self.az_tracking_start_tolerance(),
+            self.el_tracking_start_tolerance(),
+            self.az_tracking_stop_tolerance(),
+            self.el_tracking_stop_tolerance(),
+            self.site.az_slow_speed,
+            self.site.el_slow_speed,
+            self.site.az_slow_threshold_degrees,
+            self.site.el_slow_threshold_degrees,
+            progress,
+        )
+        if panel:
+            self.events.put(("position", panel.update_position, position))
+        return position
+
+    def collect_power_average(self, dwell_seconds: float, stop_event: threading.Event) -> dict[str, object]:
+        measurements: list[dict[str, object]] = []
+        end_time = time.monotonic() + dwell_seconds
+        while not stop_event.is_set() and time.monotonic() < end_time:
+            measurement = self.power_panel.current_power_measurement()
+            if measurement is not None:
+                measurements.append(measurement)
+            time.sleep(0.1)
+        if not measurements:
+            raise RuntimeError("No RTL power measurements were available.")
+        return {
+            "power_value": sum(float(row["power_value"]) for row in measurements) / len(measurements),
+            "power_dbfs": sum(float(row["power_dbfs"]) for row in measurements) / len(measurements),
+            "power_unit": str(measurements[-1]["power_unit"]),
+            "power_calibrated": all(bool(row.get("power_calibrated")) for row in measurements),
+            "power_extrapolated": any(bool(row.get("power_extrapolated")) for row in measurements),
+        }
 
     def prepare_peak_calibration_owner(self) -> None:
         if self.parking_active:
@@ -3659,6 +4011,12 @@ class WT4App(tk.Tk):
             return
         self.scan_dialog = ScanCalibrationDialog(self)
 
+    def open_yfactor(self) -> None:
+        if self.yfactor_dialog and self.yfactor_dialog.winfo_exists():
+            self.yfactor_dialog.lift()
+            return
+        self.yfactor_dialog = YFactorDialog(self)
+
     def open_rtl_calibration(self) -> None:
         if self.rtl_calibration_dialog and self.rtl_calibration_dialog.winfo_exists():
             self.rtl_calibration_dialog.lift()
@@ -3730,6 +4088,11 @@ class WT4App(tk.Tk):
     def stop_all(self) -> None:
         self.tracking_stop_event.set()
         self.park_stop_event.set()
+        self.scan_stop_event.set()
+        self.yfactor_stop_event.set()
+        self.scan_active = False
+        self.yfactor_active = False
+        self.set_scan_offset(None)
         self.event_log.warn("STOP_ALL")
         for panel in self.panels.values():
             panel.stop_event.set()
@@ -3744,7 +4107,7 @@ class WT4App(tk.Tk):
         self.status_var.set("Stopped.")
 
     def periodic_refresh(self) -> None:
-        if not self.tracking_active and not self.parking_active and not self.scan_active:
+        if not self.tracking_active and not self.parking_active and not self.scan_active and not self.yfactor_active:
             self.refresh_all()
         else:
             self.check_controller_health()
@@ -3790,6 +4153,7 @@ class WT4App(tk.Tk):
             self.power_panel.stop_log()
             self.power_panel.stop()
             self.stop_scan()
+            self.stop_yfactor()
             self.stop_all()
             for session in self.sessions.values():
                 session.close()
