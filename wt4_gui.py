@@ -44,7 +44,7 @@ from wt4_power import PowerMeterConfig, PowerReading, RtlPowerMeter
 from wt4_solar import sun_equatorial, sun_position
 
 
-APP_VERSION = "v4.8"
+APP_VERSION = "v4.9"
 
 
 class EventLogger:
@@ -3265,59 +3265,122 @@ class WT4App(tk.Tk):
     ) -> None:
         rows: list[dict[str, float]] = []
         completed_unit = "dB"
+        yfactor_dir = Path(self.config_path).parent / "yfactor"
+        yfactor_dir.mkdir(parents=True, exist_ok=True)
+        log_path = yfactor_dir / f"wt4_yfactor_{antenna_name.lower()}_{datetime.now():%Y%m%d-%H%M%S}.csv"
         try:
-            with self.motion_lock:
+            with log_path.open("w", newline="", encoding="utf-8") as handle:
+                fieldnames = [
+                    "local_time",
+                    "utc_time",
+                    "antenna",
+                    "measurement",
+                    "measurement_count",
+                    "hot_source",
+                    "hot_az",
+                    "hot_el",
+                    "cold_mode",
+                    "cold_az",
+                    "cold_el",
+                    "hot_power",
+                    "cold_power",
+                    "power_unit",
+                    "hot_dbfs",
+                    "cold_dbfs",
+                    "hot_samples",
+                    "cold_samples",
+                    "calibrated",
+                    "extrapolated",
+                    "y_factor_ratio",
+                    "y_factor_db",
+                    "dwell_seconds",
+                ]
+                writer = csv.DictWriter(handle, fieldnames=fieldnames)
+                writer.writeheader()
                 selected = self.sessions.get(antenna_name)
                 if not selected:
                     raise RuntimeError(f"{antenna_name} is not connected.")
                 selected_panel = self.panels.get(antenna_name)
-                for other_name, other_session in list(self.sessions.items()):
-                    if other_name == antenna_name:
-                        continue
-                    other_session.stop_all()
-                    other_session.update_oled_activity("STOPPED")
-                    other_panel = self.panels.get(other_name)
-                    if other_panel:
-                        self.events.put(("ok", other_panel.set_tracking_status, "STOPPED"))
+                with self.motion_lock:
+                    for other_name, other_session in list(self.sessions.items()):
+                        if other_name == antenna_name:
+                            continue
+                        other_session.stop_all()
+                        other_session.update_oled_activity("STOPPED")
+                        other_panel = self.panels.get(other_name)
+                        if other_panel:
+                            self.events.put(("ok", other_panel.set_tracking_status, "STOPPED"))
 
-                for index in range(1, count + 1):
-                    if self.yfactor_stop_event.is_set():
-                        break
-                    hot_target = self.yfactor_hot_target(target_label)
-                    cold_target = self.yfactor_cold_target(cold_mode, hot_target, cold_az, cold_el, cold_ra, cold_dec)
-                    self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: hot {hot_target.name}."))
-                    self.yfactor_slew_selected(antenna_name, selected, selected_panel, hot_target, "HOT")
-                    hot = self.collect_power_average(dwell_seconds, self.yfactor_stop_event)
-                    if self.yfactor_stop_event.is_set():
-                        break
-                    completed_unit = str(hot["power_unit"])
-                    self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: cold sky."))
-                    self.yfactor_slew_selected(antenna_name, selected, selected_panel, cold_target, "COLD")
-                    cold = self.collect_power_average(dwell_seconds, self.yfactor_stop_event)
-                    if self.yfactor_stop_event.is_set():
-                        break
-                    y_db = hot["power_value"] - cold["power_value"]
-                    rows.append(
-                        {
-                            "hot": hot["power_value"],
-                            "cold": cold["power_value"],
-                            "y_db": y_db,
-                            "y_ratio": 10 ** (y_db / 10.0),
-                        }
-                    )
-                    self.event_log.info(
-                        "YFACTOR_POINT",
-                        antenna=antenna_name,
-                        index=index,
-                        hot=hot["power_value"],
-                        cold=cold["power_value"],
-                        unit=hot["power_unit"],
-                        y_db=y_db,
-                    )
-                selected.stop_all()
-                selected.update_oled_activity("STOPPED")
-                if selected_panel:
-                    self.events.put(("ok", selected_panel.set_tracking_status, "STOPPED"))
+                    for index in range(1, count + 1):
+                        if self.yfactor_stop_event.is_set():
+                            break
+                        hot_target = self.yfactor_hot_target(target_label)
+                        cold_target = self.yfactor_cold_target(cold_mode, hot_target, cold_az, cold_el, cold_ra, cold_dec)
+                        self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: hot {hot_target.name}."))
+                        self.yfactor_slew_selected(antenna_name, selected, selected_panel, hot_target, "HOT")
+                        hot = self.collect_power_average(dwell_seconds, self.yfactor_stop_event)
+                        if self.yfactor_stop_event.is_set():
+                            break
+                        completed_unit = str(hot["power_unit"])
+                        self.events.put(("ok", dialog.set_status, f"Measurement {index}/{count}: cold sky."))
+                        self.yfactor_slew_selected(antenna_name, selected, selected_panel, cold_target, "COLD")
+                        cold = self.collect_power_average(dwell_seconds, self.yfactor_stop_event)
+                        if self.yfactor_stop_event.is_set():
+                            break
+                        y_db = hot["power_value"] - cold["power_value"]
+                        y_ratio = 10 ** (y_db / 10.0)
+                        rows.append(
+                            {
+                                "hot": hot["power_value"],
+                                "cold": cold["power_value"],
+                                "y_db": y_db,
+                                "y_ratio": y_ratio,
+                            }
+                        )
+                        now_local = datetime.now().astimezone()
+                        now_utc = now_local.astimezone(timezone.utc)
+                        writer.writerow(
+                            {
+                                "local_time": now_local.isoformat(timespec="seconds"),
+                                "utc_time": now_utc.isoformat(timespec="seconds"),
+                                "antenna": antenna_name,
+                                "measurement": index,
+                                "measurement_count": count,
+                                "hot_source": hot_target.name,
+                                "hot_az": f"{hot_target.azimuth:0.3f}",
+                                "hot_el": f"{hot_target.elevation:0.3f}",
+                                "cold_mode": cold_mode,
+                                "cold_az": f"{cold_target.azimuth:0.3f}",
+                                "cold_el": f"{cold_target.elevation:0.3f}",
+                                "hot_power": f"{float(hot['power_value']):0.3f}",
+                                "cold_power": f"{float(cold['power_value']):0.3f}",
+                                "power_unit": hot["power_unit"],
+                                "hot_dbfs": f"{float(hot['power_dbfs']):0.3f}",
+                                "cold_dbfs": f"{float(cold['power_dbfs']):0.3f}",
+                                "hot_samples": int(hot["sample_count"]),
+                                "cold_samples": int(cold["sample_count"]),
+                                "calibrated": bool(hot.get("power_calibrated")) and bool(cold.get("power_calibrated")),
+                                "extrapolated": bool(hot.get("power_extrapolated")) or bool(cold.get("power_extrapolated")),
+                                "y_factor_ratio": f"{y_ratio:0.6f}",
+                                "y_factor_db": f"{y_db:0.3f}",
+                                "dwell_seconds": f"{dwell_seconds:0.3f}",
+                            }
+                        )
+                        handle.flush()
+                        self.event_log.info(
+                            "YFACTOR_POINT",
+                            antenna=antenna_name,
+                            index=index,
+                            hot=hot["power_value"],
+                            cold=cold["power_value"],
+                            unit=hot["power_unit"],
+                            y_db=y_db,
+                            csv=str(log_path),
+                        )
+                    selected.stop_all()
+                    selected.update_oled_activity("STOPPED")
+                    if selected_panel:
+                        self.events.put(("ok", selected_panel.set_tracking_status, "STOPPED"))
             if self.yfactor_stop_event.is_set():
                 self.events.put(("ok", dialog.set_status, "Y Factor stopped."))
                 self.events.put(("ok", self.set_status, "Y Factor stopped."))
@@ -3332,7 +3395,7 @@ class WT4App(tk.Tk):
                 f"Y Factor {avg_y_ratio:0.3f} ({avg_y_db:0.2f} dB), "
                 f"hot {avg_hot:0.1f} {completed_unit}, cold {avg_cold:0.1f} {completed_unit}, n={len(rows)}"
             )
-            self.event_log.info("YFACTOR_COMPLETE", antenna=antenna_name, y_ratio=avg_y_ratio, y_db=avg_y_db, count=len(rows))
+            self.event_log.info("YFACTOR_COMPLETE", antenna=antenna_name, y_ratio=avg_y_ratio, y_db=avg_y_db, count=len(rows), csv=str(log_path))
             self.events.put(("ok", dialog.set_status, summary))
             self.events.put(("ok", self.set_status, summary))
         except Exception as exc:
@@ -3427,6 +3490,7 @@ class WT4App(tk.Tk):
             "power_unit": str(measurements[-1]["power_unit"]),
             "power_calibrated": all(bool(row.get("power_calibrated")) for row in measurements),
             "power_extrapolated": any(bool(row.get("power_extrapolated")) for row in measurements),
+            "sample_count": len(measurements),
         }
 
     def prepare_peak_calibration_owner(self) -> None:
